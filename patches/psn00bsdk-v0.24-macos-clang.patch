@@ -1,0 +1,60 @@
+diff --git a/libpsn00b/include/psxgpu.h b/libpsn00b/include/psxgpu.h
+index f1e5de8..ea8d00e 100644
+--- a/libpsn00b/include/psxgpu.h
++++ b/libpsn00b/include/psxgpu.h
+@@ -592,7 +592,10 @@ void *VSyncHaltFunction(void (*func)(void));
+ void *VSyncCallback(void (*func)(void));
+ 
+ void SetDrawOpType(GPU_DrawOpType type);
+-int EnqueueDrawOp(void (*func)(), uint32_t arg1, uint32_t arg2, uint32_t arg3);
++int EnqueueDrawOp(
++	void (*func)(uint32_t, uint32_t, uint32_t),
++	uint32_t arg1, uint32_t arg2, uint32_t arg3
++);
+ int DrawSync(int mode);
+ void *DrawSyncCallback(void (*func)(void));
+ 
+diff --git a/libpsn00b/lzp/compress.c b/libpsn00b/lzp/compress.c
+index 16cb606..2da6a67 100644
+--- a/libpsn00b/lzp/compress.c
++++ b/libpsn00b/lzp/compress.c
+@@ -1,9 +1,7 @@
+ // Based on ilia muraviev's CRUSH compressor program which falls under public domain
+ 
+ #include <string.h>
+-#ifdef LZP_USE_MALLOC
+ #include <stdlib.h>
+-#endif
+ 
+ #include "lzconfig.h"
+ #include "bit.h"
+diff --git a/libpsn00b/psxgpu/common.c b/libpsn00b/psxgpu/common.c
+index 5678f35..fb07ae5 100644
+--- a/libpsn00b/psxgpu/common.c
++++ b/libpsn00b/psxgpu/common.c
+@@ -196,7 +196,10 @@ void SetDrawOpType(GPU_DrawOpType type) {
+ 	_drawop_type = type;
+ }
+ 
+-int EnqueueDrawOp(void (*func)(), uint32_t arg1, uint32_t arg2, uint32_t arg3) {
++int EnqueueDrawOp(
++	void (*func)(uint32_t, uint32_t, uint32_t),
++	uint32_t arg1, uint32_t arg2, uint32_t arg3
++) {
+ 	_sdk_validate_args(func, -1);
+ 
+ 	// If GPU DMA is currently busy, append the command to the queue instead of
+diff --git a/tools/mkpsxiso/src/shared/platform.h b/tools/mkpsxiso/src/shared/platform.h
+index 1c7333c..fa7ce54 100644
+--- a/tools/mkpsxiso/src/shared/platform.h
++++ b/tools/mkpsxiso/src/shared/platform.h
+@@ -14,6 +14,9 @@
+ #define stat64 _stat64
+ #define PRFILESYSTEM_PATH "ls"
+ #else
++#ifdef __APPLE__
++#define stat64 stat
++#endif
+ #define PRFILESYSTEM_PATH "s"
+ #endif
+ 

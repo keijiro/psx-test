@@ -1,0 +1,5 @@
+.DS_Store
+.local/
+build/
+third_party/
+

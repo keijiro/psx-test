@@ -1,0 +1,60 @@
+lock_version = 1
+generated_at = "2026-09-16T16:45:00+09:00"
+
+[host]
+os = "macOS 26.6.2 (25G83)"
+architecture = "arm64"
+xcode = "27.0 (27A266a)"
+apple_clang = "21.0.0 (clang-2100.3.34.2)"
+homebrew = "6.0.22"
+
+[host_packages]
+cmake = "4.4.3"
+ninja = "1.13.2"
+texinfo = "7.3_1"
+gmp = "6.3.0"
+mpfr = "4.2.2"
+libmpc = "1.4.1"
+gnu_sed = "4.10"
+brew_install_path = "1.2.0"
+
+[mips_toolchain]
+source_repository = "https://github.com/grumpycoders/pcsx-redux"
+definition_commit = "c2e2dec197d3eb8f3db2ee63b8037321dbe1085e"
+target = "mipsel-none-elf"
+binutils = "2.47"
+gcc = "16.2.0"
+binutils_formula_url = "https://raw.githubusercontent.com/grumpycoders/pcsx-redux/c2e2dec197d3eb8f3db2ee63b8037321dbe1085e/tools/macos-mips/mipsel-none-elf-binutils.rb"
+binutils_formula_sha256 = "20c8043f71773402683d30e0a611586bf6755f721421a4b435f09b050c955f03"
+gcc_formula_url = "https://raw.githubusercontent.com/grumpycoders/pcsx-redux/c2e2dec197d3eb8f3db2ee63b8037321dbe1085e/tools/macos-mips/mipsel-none-elf-gcc.rb"
+gcc_formula_sha256 = "d6a9737b2bd04031ef7a4dfa8e163338feb214837fa466f0d37bed03166a3936"
+
+[psn00bsdk]
+repository = "https://github.com/Lameguy64/PSn00bSDK"
+tag = "v0.24"
+commit = "06e65bea3a778b2dae5af77a7935ae3868ddd4d3"
+install_path = ".local/psn00bsdk"
+patch = "patches/psn00bsdk-v0.24-macos-clang.patch"
+patch_sha256 = "b82973981b81362284426b9b7b77d79ee299226928abc75f4e9fa2ae3c51ce45"
+mkpsxiso_commit = "9f6275f08829ea9de8122c8232a019e8724acbbd"
+tinyxml2_commit = "e05956094c27117f989d22f25b75633123d72a83"
+
+[pcsx_redux]
+repository = "https://github.com/grumpycoders/pcsx-redux"
+channel = "dev-macos-arm"
+build_id = 250
+commit = "c2e2dec197d3eb8f3db2ee63b8037321dbe1085e"
+build_timestamp_utc = "2026-09-13T06:58:45Z"
+manifest_url = "https://distrib.app/storage/manifests/pcsx-redux/dev-macos-arm/manifest-250.json"
+dmg_url = "https://distrib.app/storage/assets/df7/d54/7b1/7fb5a8875b24e0329d2e496aed2e88d0b800935f5df8ac3172c0578/PCSX-Redux-c2e2dec1-Arm.dmg"
+dmg_size = 48236326
+dmg_sha256 = "8022e3b3158fc2aa6f742b83e582783552fc2adebf9af6cd94da22786703d882"
+install_path = ".local/PCSX-Redux.app"
+
+[openbios]
+provenance = "Bundled with PCSX-Redux macOS ARM build 250"
+source_commit = "c2e2dec197d3eb8f3db2ee63b8037321dbe1085e"
+path = ".local/PCSX-Redux.app/Contents/Resources/share/pcsx-redux/resources/openbios.bin"
+sha256 = "713ea2aed58606282b3ff5e91d77f8c5892ea36f5adcd279d2c7dd26604a625d"
+pcsx_detected_id = "0b0359a7"
+
