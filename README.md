@@ -64,6 +64,9 @@ built-in debugger enabled. Set `PCSX_REDUX`, `PCSX_REDUX_BIOS`, or
 `PCSX_REDUX_DATA` to use a different emulator binary, BIOS, or personal data
 directory, respectively.
 
+Use Up and Down on the D-pad to select an envelope setting, and Left and Right
+to adjust it while the demo is running. The editable settings are the start and
+end pitch, pitch sweep length, amplitude decay length, and noise decay length.
 Press the key mapped to the Cross button to trigger the kick. To change the
 mapping, press Escape and open `Configuration > Controls`. F5 runs the program
 and F6 pauses it. Because `run.sh` disables Dynarec and enables the debugger,

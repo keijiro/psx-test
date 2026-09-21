@@ -21,8 +21,11 @@
 #define VOICE_MASK        ((1 << SINE_CHANNEL) | (1 << NOISE_CHANNEL))
 #define VOICE_VOLUME      0x3000
 
-#define KICK_INTERVAL     30
-#define ENVELOPE_FRAMES   24
+#define KICK_INTERVAL          30
+#define AMPLITUDE_SHAPE_FRAMES 24
+#define PITCH_SHAPE_FRAMES     12
+#define NOISE_SHAPE_FRAMES     4
+#define SETTING_COUNT          5
 
 typedef struct {
 	DISPENV disp_env;
@@ -44,6 +47,15 @@ typedef struct {
 	int frequency;
 } Sequencer;
 
+typedef struct {
+	int pitch_start;
+	int pitch_end;
+	int pitch_frames;
+	int amplitude_frames;
+	int noise_frames;
+	int selected;
+} EnvelopeSettings;
+
 static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
 	 0,  1,  2,  2,  3,  4,  4,  5,  5,  6,  6,  7,  7,  7,
 	 7,  7,  7,  7,  6,  6,  5,  5,  4,  4,  3,  2,  2,  1,
@@ -64,28 +76,94 @@ static const int8_t noise_samples[WAVE_SAMPLE_COUNT] = {
 // At 60 Hz these first four steps make the transient change from noise to
 // sine in about 50 ms. The pitch drops an octave and a half in about 100 ms,
 // while the longer nonlinear level decay leaves the sine body audible.
-static const uint16_t pitch_envelope[ENVELOPE_FRAMES] = {
-	180, 145, 116,  94,  78,  66,  58,  53,
-	 50,  48,  47,  46,  46,  46,  46,  46,
-	 46,  46,  46,  46,  46,  46,  46,  46
+static const uint16_t pitch_shape[PITCH_SHAPE_FRAMES] = {
+	180, 145, 116, 94, 78, 66, 58, 53, 50, 48, 47, 46
 };
 
-static const uint16_t amplitude_envelope[ENVELOPE_FRAMES] = {
+static const uint16_t amplitude_shape[AMPLITUDE_SHAPE_FRAMES] = {
 	256, 250, 239, 225, 208, 190, 172, 154,
 	137, 121, 106,  92,  79,  67,  56,  46,
 	 37,  29,  22,  16,  11,   7,   3,   0
 };
 
-static const uint16_t noise_envelope[ENVELOPE_FRAMES] = {
-	256, 112,  32,   0,   0,   0,   0,   0,
-	  0,   0,   0,   0,   0,   0,   0,   0,
-	  0,   0,   0,   0,   0,   0,   0,   0
+static const uint16_t noise_shape[NOISE_SHAPE_FRAMES] = {
+	256, 112, 32, 0
 };
 
 static RenderContext render_context;
 static Sequencer sequencer;
+static EnvelopeSettings envelope_settings = { 180, 46, 12, 24, 4, 0 };
 static uint8_t pad_buffers[2][34];
 static uint32_t wave_data[(WAVE_DATA_SIZE * 2) / sizeof(uint32_t)];
+
+static int clamp(int value, int minimum, int maximum) {
+	if (value < minimum)
+		return minimum;
+	if (value > maximum)
+		return maximum;
+	return value;
+}
+
+static int sample_shape(
+	const uint16_t *shape, int shape_frames, int output_frames, int frame
+) {
+	if (frame >= output_frames)
+		return shape[shape_frames - 1];
+	if (output_frames == 1)
+		return shape[0];
+
+	// Linear interpolation lets timing change without replacing the measured
+	// curves, and gives the original table back exactly at its default length.
+	int position = frame * (shape_frames - 1) * 256 / (output_frames - 1);
+	int index = position / 256;
+	int fraction = position & 255;
+	if (index >= shape_frames - 1)
+		return shape[shape_frames - 1];
+
+	return (shape[index] * (256 - fraction) + shape[index + 1] * fraction) / 256;
+}
+
+static int evaluate_pitch(int frame) {
+	int shape = sample_shape(
+		pitch_shape, PITCH_SHAPE_FRAMES, envelope_settings.pitch_frames, frame
+	);
+	return envelope_settings.pitch_end +
+		(shape - pitch_shape[PITCH_SHAPE_FRAMES - 1]) *
+		(envelope_settings.pitch_start - envelope_settings.pitch_end) /
+		(pitch_shape[0] - pitch_shape[PITCH_SHAPE_FRAMES - 1]);
+}
+
+static void adjust_envelope_setting(int direction) {
+	switch (envelope_settings.selected) {
+		case 0:
+			envelope_settings.pitch_start = clamp(
+				envelope_settings.pitch_start + direction * 10,
+				envelope_settings.pitch_end + 10, 300
+			);
+			break;
+		case 1:
+			envelope_settings.pitch_end = clamp(
+				envelope_settings.pitch_end + direction * 2, 30,
+				envelope_settings.pitch_start - 10
+			);
+			break;
+		case 2:
+			envelope_settings.pitch_frames = clamp(
+				envelope_settings.pitch_frames + direction, 4, KICK_INTERVAL
+			);
+			break;
+		case 3:
+			envelope_settings.amplitude_frames = clamp(
+				envelope_settings.amplitude_frames + direction, 4, KICK_INTERVAL
+			);
+			break;
+		case 4:
+			envelope_settings.noise_frames = clamp(
+				envelope_settings.noise_frames + direction, 1, 12
+			);
+			break;
+	}
+}
 
 static void encode_wavetable(uint8_t *destination, const int8_t *samples) {
 	// Two 28-sample, filter-free ADPCM blocks make one complete cycle. The
@@ -134,7 +212,7 @@ static void setup_sound(void) {
 }
 
 static void start_kick(void) {
-	uint16_t pitch = getSPUSampleRate(pitch_envelope[0] * WAVE_SAMPLE_COUNT);
+	uint16_t pitch = getSPUSampleRate(envelope_settings.pitch_start * WAVE_SAMPLE_COUNT);
 
 	SpuSetKey(0, VOICE_MASK);
 	set_voice_volume(SINE_CHANNEL, 0);
@@ -143,24 +221,23 @@ static void start_kick(void) {
 	SPU_CH_FREQ(NOISE_CHANNEL) = pitch;
 
 	sequencer.kick_frame = 0;
-	sequencer.noise_mix = noise_envelope[0];
-	sequencer.amplitude = amplitude_envelope[0];
-	sequencer.frequency = pitch_envelope[0];
+	sequencer.noise_mix = noise_shape[0];
+	sequencer.amplitude = amplitude_shape[0];
+	sequencer.frequency = envelope_settings.pitch_start;
 	SpuSetKey(1, VOICE_MASK);
 }
 
 static void update_sound(void) {
 	int frame = sequencer.kick_frame;
 
-	if (frame < ENVELOPE_FRAMES) {
-		sequencer.noise_mix = noise_envelope[frame];
-		sequencer.amplitude = amplitude_envelope[frame];
-		sequencer.frequency = pitch_envelope[frame];
-	} else {
-		sequencer.noise_mix = 0;
-		sequencer.amplitude = 0;
-		sequencer.frequency = pitch_envelope[ENVELOPE_FRAMES - 1];
-	}
+	sequencer.noise_mix = sample_shape(
+		noise_shape, NOISE_SHAPE_FRAMES, envelope_settings.noise_frames, frame
+	);
+	sequencer.amplitude = sample_shape(
+		amplitude_shape, AMPLITUDE_SHAPE_FRAMES,
+		envelope_settings.amplitude_frames, frame
+	);
+	sequencer.frequency = evaluate_pitch(frame);
 
 	uint16_t pitch = getSPUSampleRate(sequencer.frequency * WAVE_SAMPLE_COUNT);
 	SPU_CH_FREQ(SINE_CHANNEL) = pitch;
@@ -233,6 +310,42 @@ static void draw_text(RenderContext *context, int x, int y, const char *text) {
 	assert(context->next_packet <= &buffer->packet_buffer[PACKET_BUFFER_LENGTH]);
 }
 
+static char *append_text(char *destination, const char *source) {
+	while (*source)
+		*destination++ = *source++;
+	return destination;
+}
+
+static char *append_number(char *destination, int value) {
+	int divisor = 100;
+	while (divisor > 1 && value < divisor)
+		divisor /= 10;
+	while (divisor > 0) {
+		*destination++ = '0' + value / divisor;
+		value %= divisor;
+		divisor /= 10;
+	}
+	return destination;
+}
+
+static void draw_setting(
+	RenderContext *context, int y, int index, const char *label, int value,
+	const char *unit
+) {
+	char text[32];
+	char *next = text;
+	*next++ = (envelope_settings.selected == index) ? '>' : ' ';
+	*next++ = ' ';
+	next = append_text(next, label);
+	*next++ = ':';
+	*next++ = ' ';
+	next = append_number(next, value);
+	*next++ = ' ';
+	next = append_text(next, unit);
+	*next = '\0';
+	draw_text(context, 8, y, text);
+}
+
 static void draw_tile(
 	RenderContext *context, int depth, int x, int y, int width, int height,
 	int red, int green, int blue
@@ -246,29 +359,34 @@ static void draw_tile(
 
 static void draw_balance(RenderContext *context) {
 	const int x = 54;
-	const int y = 88;
+	const int y = 108;
 	const int width = 212;
 	int noise_width = width * sequencer.noise_mix / 256;
 
 	draw_tile(context, 3, x, y, width, 9, 28, 34, 48);
 	draw_tile(context, 2, x, y, noise_width, 9, 255, 116, 48);
 	draw_tile(context, 2, x + noise_width, y, width - noise_width, 9, 60, 150, 255);
-	draw_text(context, 8, 85, "NOISE");
-	draw_text(context, 273, 85, "SINE");
+	draw_text(context, 8, 105, "NOISE");
+	draw_text(context, 273, 105, "SINE");
 
-	draw_tile(context, 3, x, 107, width, 4, 28, 34, 48);
-	draw_tile(context, 2, x, 107, width * sequencer.amplitude / 256, 4, 88, 224, 128);
-	draw_text(context, 8, 103, "AMP");
+	draw_tile(context, 3, x, 127, width, 4, 28, 34, 48);
+	draw_tile(context, 2, x, 127, width * sequencer.amplitude / 256, 4, 88, 224, 128);
+	draw_text(context, 8, 123, "AMP");
 
-	draw_tile(context, 3, x, 122, width, 4, 28, 34, 48);
-	draw_tile(context, 2, x, 122, width * sequencer.frequency / 180, 4, 232, 204, 72);
-	draw_text(context, 8, 118, "PITCH");
+	draw_tile(context, 3, x, 142, width, 4, 28, 34, 48);
+	draw_tile(
+		context, 2, x, 142,
+		width * clamp(sequencer.frequency, 0, envelope_settings.pitch_start) /
+			envelope_settings.pitch_start,
+		4, 232, 204, 72
+	);
+	draw_text(context, 8, 138, "PITCH");
 }
 
 static void draw_waveform(RenderContext *context) {
 	const int graph_left = 19;
 	const int graph_width = 282;
-	const int center_y = 170;
+	const int center_y = 181;
 	int red = 60 + 195 * sequencer.noise_mix / 256;
 	int green = 150 - 34 * sequencer.noise_mix / 256;
 	int blue = 255 - 207 * sequencer.noise_mix / 256;
@@ -289,9 +407,9 @@ static void draw_waveform(RenderContext *context) {
 		setXY2(
 			line,
 			graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_a * 5,
+			center_y - sample_a * 4,
 			graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_b * 5
+			center_y - sample_b * 4
 		);
 		setRGB0(line, red, green, blue);
 	}
@@ -311,14 +429,38 @@ int main(void) {
 
 		PADTYPE *pad = (PADTYPE *) pad_buffers[0];
 		uint16_t buttons = (pad->stat == 0) ? pad->btn : 0xffff;
+		uint16_t pressed = previous_buttons & ~buttons;
+		if (pressed & PAD_UP)
+			envelope_settings.selected =
+				(envelope_settings.selected + SETTING_COUNT - 1) % SETTING_COUNT;
+		if (pressed & PAD_DOWN)
+			envelope_settings.selected =
+				(envelope_settings.selected + 1) % SETTING_COUNT;
+		if (pressed & PAD_LEFT)
+			adjust_envelope_setting(-1);
+		if (pressed & PAD_RIGHT)
+			adjust_envelope_setting(1);
 		if ((previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS))
 			start_kick();
 		previous_buttons = buttons;
 
 		draw_text(&render_context, 8, 10, "WAVETABLE KICK SYNTHESIS");
-		draw_text(&render_context, 8, 27, "Noise transient -> sine body");
-		draw_text(&render_context, 8, 43, "Fast high -> low pitch sweep");
-		draw_text(&render_context, 8, 62, "RETRIGGER: 120 BPM");
+		draw_setting(
+			&render_context, 27, 0, "PITCH START", envelope_settings.pitch_start, "Hz"
+		);
+		draw_setting(
+			&render_context, 39, 1, "PITCH END", envelope_settings.pitch_end, "Hz"
+		);
+		draw_setting(
+			&render_context, 51, 2, "PITCH SWEEP", envelope_settings.pitch_frames, "fr"
+		);
+		draw_setting(
+			&render_context, 63, 3, "AMP DECAY", envelope_settings.amplitude_frames, "fr"
+		);
+		draw_setting(
+			&render_context, 75, 4, "NOISE DECAY", envelope_settings.noise_frames, "fr"
+		);
+		draw_text(&render_context, 8, 91, "D-pad: select / adjust");
 		draw_balance(&render_context);
 		draw_waveform(&render_context);
 		draw_text(&render_context, 8, 217, "Cross: trigger kick");
