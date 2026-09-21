@@ -211,25 +211,7 @@ static void setup_sound(void) {
 	}
 }
 
-static void start_kick(void) {
-	uint16_t pitch = getSPUSampleRate(envelope_settings.pitch_start * WAVE_SAMPLE_COUNT);
-
-	SpuSetKey(0, VOICE_MASK);
-	set_voice_volume(SINE_CHANNEL, 0);
-	set_voice_volume(NOISE_CHANNEL, 0);
-	SPU_CH_FREQ(SINE_CHANNEL) = pitch;
-	SPU_CH_FREQ(NOISE_CHANNEL) = pitch;
-
-	sequencer.kick_frame = 0;
-	sequencer.noise_mix = noise_shape[0];
-	sequencer.amplitude = amplitude_shape[0];
-	sequencer.frequency = envelope_settings.pitch_start;
-	SpuSetKey(1, VOICE_MASK);
-}
-
-static void update_sound(void) {
-	int frame = sequencer.kick_frame;
-
+static void apply_envelope_frame(int frame) {
 	sequencer.noise_mix = sample_shape(
 		noise_shape, NOISE_SHAPE_FRAMES, envelope_settings.noise_frames, frame
 	);
@@ -250,10 +232,26 @@ static void update_sound(void) {
 	int noise_volume = volume * sequencer.noise_mix / 256;
 	set_voice_volume(SINE_CHANNEL, sine_volume);
 	set_voice_volume(NOISE_CHANNEL, noise_volume);
+}
 
+static void start_kick(void) {
+	SpuSetKey(0, VOICE_MASK);
+
+	// Apply the first envelope sample before key-on so playback starts with the
+	// intended transient instead of advancing silently until the next VBlank.
+	sequencer.kick_frame = 0;
+	apply_envelope_frame(sequencer.kick_frame);
+	SpuSetKey(1, VOICE_MASK);
+}
+
+static void update_sound(void) {
 	sequencer.kick_frame++;
-	if (sequencer.kick_frame >= KICK_INTERVAL)
+	if (sequencer.kick_frame >= KICK_INTERVAL) {
 		start_kick();
+		return;
+	}
+
+	apply_envelope_frame(sequencer.kick_frame);
 }
 
 static void setup_rendering(RenderContext *context) {
@@ -420,13 +418,11 @@ int main(void) {
 	setup_sound();
 	InitPAD(pad_buffers[0], sizeof(pad_buffers[0]), pad_buffers[1], sizeof(pad_buffers[1]));
 	StartPAD();
-	start_kick();
 
 	uint16_t previous_buttons = 0xffff;
+	int sound_started = 0;
 
 	for (;;) {
-		update_sound();
-
 		PADTYPE *pad = (PADTYPE *) pad_buffers[0];
 		uint16_t buttons = (pad->stat == 0) ? pad->btn : 0xffff;
 		uint16_t pressed = previous_buttons & ~buttons;
@@ -440,8 +436,14 @@ int main(void) {
 			adjust_envelope_setting(-1);
 		if (pressed & PAD_RIGHT)
 			adjust_envelope_setting(1);
-		if ((previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS))
+		int trigger_pressed =
+			(previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS);
+		if (trigger_pressed || !sound_started) {
 			start_kick();
+			sound_started = 1;
+		} else {
+			update_sound();
+		}
 		previous_buttons = buttons;
 
 		draw_text(&render_context, 8, 10, "WAVETABLE KICK SYNTHESIS");
