@@ -1,5 +1,13 @@
 # Validation record
 
+## SPU ADSR wavetable envelopes
+
+On 2026-09-21, per-millisecond CPU volume writes were replaced with native SPU
+ADSR envelopes for the sine and noise voices. Both Debug and Release builds
+completed successfully. The Debug executable remained running under OpenBIOS
+in PCSX-Redux without an emulator or SDK error. The revised envelopes have not
+been evaluated by ear or checked on original hardware.
+
 ## Wavetable kick synthesis demo
 
 On 2026-09-21, the melodic sine-to-saw demonstration was replaced with a

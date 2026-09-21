@@ -2,13 +2,13 @@
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
 original PlayStation from C source on Apple Silicon Macs. The demo synthesizes
-a manually triggered kick drum with two SPU voices. A short complementary
-envelope crossfades a fixed noise wavetable into a sine wavetable, while a
-second envelope rapidly sweeps both voices from 180 Hz to 46 Hz. A nonlinear
-amplitude decay shapes the body, then the synth remains silent until the Cross
-button is pressed again. A 1 kHz hardware timer drives the envelopes
-independently of video rendering. Both SPU ADPCM tables are generated in
-memory, so no external audio assets are required.
+a manually triggered kick drum with two SPU voices. Per-voice SPU ADSR
+envelopes fade a fixed noise wavetable into a sine wavetable, while a pitch
+envelope rapidly sweeps both voices from 180 Hz to 46 Hz. The synth then
+remains silent until the Cross button is pressed again. A 1 kHz hardware timer
+drives only the pitch sweep and samples the SPU envelope levels for the
+visualization; volume shaping runs on the SPU. Both SPU ADPCM tables are
+generated in memory, so no external audio assets are required.
 
 ## Initial setup
 
@@ -67,8 +67,9 @@ directory, respectively.
 
 Use Up and Down on the D-pad to select an envelope setting, and Left and Right
 to adjust it while the demo is running. The editable settings are the start and
-end pitch, pitch sweep length, amplitude decay length, and noise decay length.
-Envelope times are displayed in milliseconds and change in 5 ms steps. Press
+end pitch, pitch sweep length, sine amplitude envelope length, and noise ADSR
+decay length. Envelope times are displayed in milliseconds and change in 5 ms
+steps; the SPU uses the closest hardware-supported ADSR rate. Press
 the key mapped to the Cross button to trigger the kick. To change the mapping,
 press Escape and open `Configuration > Controls`. F5 runs the program and F6
 pauses it. Because `run.sh` disables Dynarec and enables the debugger, `Debug >

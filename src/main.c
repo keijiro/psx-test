@@ -29,10 +29,9 @@
 #define ENVELOPE_MAX_MS          485
 #define NOISE_MIN_MS             15
 #define NOISE_MAX_MS             185
-#define AMPLITUDE_SHAPE_POINTS   24
 #define PITCH_SHAPE_POINTS       12
-#define NOISE_SHAPE_POINTS       4
 #define SETTING_COUNT            5
+#define ADSR_MAX_LEVEL           0x7fff
 
 typedef struct {
 	DISPENV disp_env;
@@ -65,12 +64,16 @@ typedef struct {
 
 typedef struct {
 	uint16_t pitch;
-	uint16_t sine_volume;
-	uint16_t noise_volume;
-	uint16_t noise_mix;
-	uint16_t amplitude;
 	uint16_t frequency;
 } EnvelopeSample;
+
+typedef struct {
+	EnvelopeSample samples[ENVELOPE_DURATION_MS];
+	uint16_t sine_adsr1;
+	uint16_t sine_adsr2;
+	uint16_t noise_adsr1;
+	uint16_t noise_adsr2;
+} EnvelopeProgram;
 
 static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
 	 0,  1,  2,  2,  3,  4,  4,  5,  5,  6,  6,  7,  7,  7,
@@ -89,29 +92,38 @@ static const int8_t noise_samples[WAVE_SAMPLE_COUNT] = {
 	 5, -4,  7, -1, -5,  2,  6, -8,  4, -2, -6,  7,  1,  1
 };
 
-// These control points preserve the original 60 Hz envelope curves. The 1 kHz
-// timer interpolates between them so rendering no longer determines the sound
-// timing, while the default durations retain the endpoint times to the nearest
+// These control points preserve the original 60 Hz pitch curve. The 1 kHz
+// timer interpolates between them so rendering no longer determines the pitch
+// timing, while the default duration retains the endpoint time to the nearest
 // five milliseconds.
 static const uint16_t pitch_shape[PITCH_SHAPE_POINTS] = {
 	180, 145, 116, 94, 78, 66, 58, 53, 50, 48, 47, 46
 };
 
-static const uint16_t amplitude_shape[AMPLITUDE_SHAPE_POINTS] = {
-	256, 250, 239, 225, 208, 190, 172, 154,
-	137, 121, 106,  92,  79,  67,  56,  46,
-	 37,  29,  22,  16,  11,   7,   3,   0
+// These are the rounded durations produced by the SPU's 44.1 kHz ADSR
+// generator. Keeping the hardware's nonlinear timing table here avoids doing
+// an envelope simulation in the timer interrupt when a kick is triggered.
+static const uint16_t attack_rate_ms[] = {
+	  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+	  0,   0,   1,   1,   1,   1,   1,   1,   2,   2,   2,   3,
+	  3,   4,   5,   6,   7,   8,   9,  12,  13,  15,  19,  23,
+	 27,  31,  37,  46,  53,  62,  74,  93, 106, 124, 149, 186,
+	212, 248, 297, 372, 425, 495, 594
 };
 
-static const uint16_t noise_shape[NOISE_SHAPE_POINTS] = {
-	256, 112, 32, 0
+static const uint16_t sustain_rate_ms[] = {
+	  0,   0,   0,   1,   1,   1,   1,   1,   2,   2,   2,   2,
+	  3,   3,   4,   4,   5,   6,   7,   8,  10,  11,  13,  15,
+	 18,  20,  23,  26,  31,  35,  40,  46,  55,  61,  69,  79,
+	 94, 104, 117, 134, 157, 173, 192, 218, 252, 275, 303, 339,
+	505
 };
 
 static RenderContext render_context;
 static volatile Sequencer sequencer = { ENVELOPE_DURATION_MS, 0, 0, 0 };
 static EnvelopeSettings envelope_settings = { 180, 46, 185, 385, 50, 0 };
-static EnvelopeSample envelope_tables[2][ENVELOPE_DURATION_MS];
-static volatile int active_envelope_table;
+static EnvelopeProgram envelope_programs[2];
+static volatile int active_envelope_program;
 static volatile int playback_active;
 static volatile int trigger_requested;
 static uint8_t pad_buffers[2][34];
@@ -150,6 +162,34 @@ static int evaluate_pitch(int elapsed_ms) {
 		(shape - pitch_shape[PITCH_SHAPE_POINTS - 1]) *
 		(envelope_settings.pitch_start - envelope_settings.pitch_end) /
 		(pitch_shape[0] - pitch_shape[PITCH_SHAPE_POINTS - 1]);
+}
+
+static int find_nearest_rate(
+	const uint16_t *durations, int duration_count, int target_ms
+) {
+	int nearest = 0;
+	int nearest_error = target_ms;
+	for (int rate = 0; rate < duration_count; rate++) {
+		int error = durations[rate] - target_ms;
+		if (error < 0)
+			error = -error;
+		if (error < nearest_error) {
+			nearest = rate;
+			nearest_error = error;
+		}
+	}
+	return nearest;
+}
+
+static uint16_t make_adsr1(int attack_rate) {
+	// Sustain level 15 skips the decay phase. Decay rate 15 prevents the
+	// hardware from taking a downward step before entering sustain.
+	return (attack_rate << 8) | 0x00ff;
+}
+
+static uint16_t make_adsr2(int sustain_rate) {
+	// Sustain decreases exponentially; key-off uses the fastest release.
+	return 0xc000 | (sustain_rate << 6);
 }
 
 static void adjust_envelope_setting(int direction) {
@@ -227,64 +267,89 @@ static void setup_sound(void) {
 	SPU_CH_LOOP_ADDR(NOISE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
 
 	for (int channel = SINE_CHANNEL; channel <= NOISE_CHANNEL; channel++) {
-		set_voice_volume(channel, 0);
-		SPU_CH_ADSR1(channel) = 0x00ff;
-		SPU_CH_ADSR2(channel) = 0x0000;
+		set_voice_volume(channel, VOICE_VOLUME);
 	}
 }
 
-static void build_envelope_table(EnvelopeSample *table) {
-	for (int elapsed_ms = 0; elapsed_ms < ENVELOPE_DURATION_MS; elapsed_ms++) {
-		int noise_mix = sample_shape(
-			noise_shape, NOISE_SHAPE_POINTS, envelope_settings.noise_ms, elapsed_ms
-		);
-		int amplitude = sample_shape(
-			amplitude_shape, AMPLITUDE_SHAPE_POINTS,
-			envelope_settings.amplitude_ms, elapsed_ms
-		);
-		int frequency = evaluate_pitch(elapsed_ms);
-		int volume = VOICE_VOLUME * amplitude / 256;
+static void build_envelope_program(EnvelopeProgram *program) {
+	// Let the sine rise while the noise falls, but reserve at least half of the
+	// requested amplitude time for the sine's sustain decay. This keeps AMP
+	// DECAY as the approximate endpoint even when NOISE DECAY is longer.
+	int sine_attack_ms = envelope_settings.noise_ms;
+	if (sine_attack_ms > envelope_settings.amplitude_ms / 2)
+		sine_attack_ms = envelope_settings.amplitude_ms / 2;
+	int sine_sustain_ms = envelope_settings.amplitude_ms - sine_attack_ms;
+	int sine_attack_rate = find_nearest_rate(
+		attack_rate_ms, sizeof(attack_rate_ms) / sizeof(attack_rate_ms[0]),
+		sine_attack_ms
+	);
+	int sine_sustain_rate = find_nearest_rate(
+		sustain_rate_ms, sizeof(sustain_rate_ms) / sizeof(sustain_rate_ms[0]),
+		sine_sustain_ms
+	);
+	int noise_sustain_rate = find_nearest_rate(
+		sustain_rate_ms, sizeof(sustain_rate_ms) / sizeof(sustain_rate_ms[0]),
+		envelope_settings.noise_ms
+	);
+	program->sine_adsr1 = make_adsr1(sine_attack_rate);
+	program->sine_adsr2 = make_adsr2(sine_sustain_rate);
+	program->noise_adsr1 = make_adsr1(0);
+	program->noise_adsr2 = make_adsr2(noise_sustain_rate);
 
-		table[elapsed_ms].pitch = getSPUSampleRate(frequency * WAVE_SAMPLE_COUNT);
-		table[elapsed_ms].sine_volume = volume * (256 - noise_mix) / 256;
-		table[elapsed_ms].noise_volume = volume * noise_mix / 256;
-		table[elapsed_ms].noise_mix = noise_mix;
-		table[elapsed_ms].amplitude = amplitude;
-		table[elapsed_ms].frequency = frequency;
+	for (int elapsed_ms = 0; elapsed_ms < ENVELOPE_DURATION_MS; elapsed_ms++) {
+		int frequency = evaluate_pitch(elapsed_ms);
+		program->samples[elapsed_ms].pitch =
+			getSPUSampleRate(frequency * WAVE_SAMPLE_COUNT);
+		program->samples[elapsed_ms].frequency = frequency;
 	}
 }
 
 static void rebuild_envelope(void) {
-	int next_table = active_envelope_table ^ 1;
-	build_envelope_table(envelope_tables[next_table]);
+	int next_program = active_envelope_program ^ 1;
+	build_envelope_program(&envelope_programs[next_program]);
 
-	// The timer must never observe a table while the main loop is rebuilding it.
+	// The timer must never observe a program while the main loop is rebuilding it.
 	// A single index swap keeps the interrupt-side work constant.
 	FastEnterCriticalSection();
-	active_envelope_table = next_table;
+	active_envelope_program = next_program;
 	FastExitCriticalSection();
 }
 
 static void apply_envelope_tick(int tick) {
-	const EnvelopeSample *sample = &envelope_tables[active_envelope_table][tick];
+	const EnvelopeSample *sample =
+		&envelope_programs[active_envelope_program].samples[tick];
 
 	SPU_CH_FREQ(SINE_CHANNEL) = sample->pitch;
 	SPU_CH_FREQ(NOISE_CHANNEL) = sample->pitch;
-	set_voice_volume(SINE_CHANNEL, sample->sine_volume);
-	set_voice_volume(NOISE_CHANNEL, sample->noise_volume);
-	sequencer.noise_mix = sample->noise_mix;
-	sequencer.amplitude = sample->amplitude;
 	sequencer.frequency = sample->frequency;
+}
+
+static void sample_spu_envelopes(void) {
+	int sine_level = SPU_CH_ADSR_VOL(SINE_CHANNEL) & ADSR_MAX_LEVEL;
+	int noise_level = SPU_CH_ADSR_VOL(NOISE_CHANNEL) & ADSR_MAX_LEVEL;
+	int combined_level = sine_level + noise_level;
+
+	sequencer.noise_mix = combined_level > 0 ?
+		noise_level * 256 / combined_level : 0;
+	sequencer.amplitude =
+		clamp(combined_level, 0, ADSR_MAX_LEVEL) * 256 / ADSR_MAX_LEVEL;
 }
 
 static void start_playback(void) {
 	SpuSetKey(0, VOICE_MASK);
+	const EnvelopeProgram *program = &envelope_programs[active_envelope_program];
+	SPU_CH_ADSR1(SINE_CHANNEL) = program->sine_adsr1;
+	SPU_CH_ADSR2(SINE_CHANNEL) = program->sine_adsr2;
+	SPU_CH_ADSR1(NOISE_CHANNEL) = program->noise_adsr1;
+	SPU_CH_ADSR2(NOISE_CHANNEL) = program->noise_adsr2;
 
 	// Apply the first envelope sample before key-on so playback starts with the
 	// intended transient instead of advancing silently until the next timer tick.
 	playback_active = 1;
 	sequencer.envelope_tick = 0;
 	apply_envelope_tick(sequencer.envelope_tick);
+	sequencer.noise_mix = 256;
+	sequencer.amplitude = 256;
 	SpuSetKey(1, VOICE_MASK);
 }
 
@@ -307,6 +372,7 @@ static void timer_tick(void) {
 
 	sequencer.envelope_tick++;
 	apply_envelope_tick(sequencer.envelope_tick);
+	sample_spu_envelopes();
 }
 
 static void setup_envelope_timer(void) {
@@ -480,7 +546,7 @@ static void draw_waveform(RenderContext *context, const Sequencer *state) {
 int main(void) {
 	setup_rendering(&render_context);
 	setup_sound();
-	build_envelope_table(envelope_tables[0]);
+	build_envelope_program(&envelope_programs[0]);
 	InitPAD(pad_buffers[0], sizeof(pad_buffers[0]), pad_buffers[1], sizeof(pad_buffers[1]));
 	StartPAD();
 
