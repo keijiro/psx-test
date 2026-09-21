@@ -5,8 +5,9 @@ original PlayStation from C source on Apple Silicon Macs. The demo synthesizes
 a kick drum at 120 BPM with two SPU voices. A short complementary envelope
 crossfades a fixed noise wavetable into a sine wavetable, while a second
 envelope rapidly sweeps both voices from 180 Hz to 46 Hz. A nonlinear amplitude
-decay shapes the body and leaves a short silent gap before retriggering. Both
-SPU ADPCM tables are generated in memory, so no external audio assets are
+decay shapes the body and leaves a short silent gap before retriggering. A
+1 kHz hardware timer drives the envelopes independently of video rendering.
+Both SPU ADPCM tables are generated in memory, so no external audio assets are
 required.
 
 ## Initial setup
@@ -67,9 +68,10 @@ directory, respectively.
 Use Up and Down on the D-pad to select an envelope setting, and Left and Right
 to adjust it while the demo is running. The editable settings are the start and
 end pitch, pitch sweep length, amplitude decay length, and noise decay length.
-Press the key mapped to the Cross button to trigger the kick. To change the
-mapping, press Escape and open `Configuration > Controls`. F5 runs the program
-and F6 pauses it. Because `run.sh` disables Dynarec and enables the debugger,
+Envelope times are displayed in milliseconds and change in 5 ms steps. Press
+the key mapped to the Cross button to trigger the kick. To change the mapping,
+press Escape and open `Configuration > Controls`. F5 runs the program and F6
+pauses it. Because `run.sh` disables Dynarec and enables the debugger,
 `Debug > Show Assembly` can be used to inspect breakpoints and CPU state.
 
 ## Artifacts and directories

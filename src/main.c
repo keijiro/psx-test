@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include <psxapi.h>
+#include <psxetc.h>
 #include <psxgpu.h>
 #include <psxpad.h>
 #include <psxspu.h>
@@ -21,11 +22,17 @@
 #define VOICE_MASK        ((1 << SINE_CHANNEL) | (1 << NOISE_CHANNEL))
 #define VOICE_VOLUME      0x3000
 
-#define KICK_INTERVAL          30
-#define AMPLITUDE_SHAPE_FRAMES 24
-#define PITCH_SHAPE_FRAMES     12
-#define NOISE_SHAPE_FRAMES     4
-#define SETTING_COUNT          5
+#define ENVELOPE_TICK_RATE       1000
+#define KICK_INTERVAL_MS         500
+#define ENVELOPE_ADJUST_STEP_MS  5
+#define ENVELOPE_MIN_MS          50
+#define ENVELOPE_MAX_MS          485
+#define NOISE_MIN_MS             15
+#define NOISE_MAX_MS             185
+#define AMPLITUDE_SHAPE_POINTS   24
+#define PITCH_SHAPE_POINTS       12
+#define NOISE_SHAPE_POINTS       4
+#define SETTING_COUNT            5
 
 typedef struct {
 	DISPENV disp_env;
@@ -41,7 +48,7 @@ typedef struct {
 } RenderContext;
 
 typedef struct {
-	int kick_frame;
+	int kick_tick;
 	int noise_mix;
 	int amplitude;
 	int frequency;
@@ -50,11 +57,20 @@ typedef struct {
 typedef struct {
 	int pitch_start;
 	int pitch_end;
-	int pitch_frames;
-	int amplitude_frames;
-	int noise_frames;
+	int pitch_ms;
+	int amplitude_ms;
+	int noise_ms;
 	int selected;
 } EnvelopeSettings;
+
+typedef struct {
+	uint16_t pitch;
+	uint16_t sine_volume;
+	uint16_t noise_volume;
+	uint16_t noise_mix;
+	uint16_t amplitude;
+	uint16_t frequency;
+} EnvelopeSample;
 
 static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
 	 0,  1,  2,  2,  3,  4,  4,  5,  5,  6,  6,  7,  7,  7,
@@ -73,26 +89,30 @@ static const int8_t noise_samples[WAVE_SAMPLE_COUNT] = {
 	 5, -4,  7, -1, -5,  2,  6, -8,  4, -2, -6,  7,  1,  1
 };
 
-// At 60 Hz these first four steps make the transient change from noise to
-// sine in about 50 ms. The pitch drops an octave and a half in about 100 ms,
-// while the longer nonlinear level decay leaves the sine body audible.
-static const uint16_t pitch_shape[PITCH_SHAPE_FRAMES] = {
+// These control points preserve the original 60 Hz envelope curves. The 1 kHz
+// timer interpolates between them so rendering no longer determines the sound
+// timing, while the default durations retain the endpoint times to the nearest
+// five milliseconds.
+static const uint16_t pitch_shape[PITCH_SHAPE_POINTS] = {
 	180, 145, 116, 94, 78, 66, 58, 53, 50, 48, 47, 46
 };
 
-static const uint16_t amplitude_shape[AMPLITUDE_SHAPE_FRAMES] = {
+static const uint16_t amplitude_shape[AMPLITUDE_SHAPE_POINTS] = {
 	256, 250, 239, 225, 208, 190, 172, 154,
 	137, 121, 106,  92,  79,  67,  56,  46,
 	 37,  29,  22,  16,  11,   7,   3,   0
 };
 
-static const uint16_t noise_shape[NOISE_SHAPE_FRAMES] = {
+static const uint16_t noise_shape[NOISE_SHAPE_POINTS] = {
 	256, 112, 32, 0
 };
 
 static RenderContext render_context;
-static Sequencer sequencer;
-static EnvelopeSettings envelope_settings = { 180, 46, 12, 24, 4, 0 };
+static volatile Sequencer sequencer;
+static EnvelopeSettings envelope_settings = { 180, 46, 185, 385, 50, 0 };
+static EnvelopeSample envelope_tables[2][KICK_INTERVAL_MS];
+static volatile int active_envelope_table;
+static volatile int trigger_requested;
 static uint8_t pad_buffers[2][34];
 static uint32_t wave_data[(WAVE_DATA_SIZE * 2) / sizeof(uint32_t)];
 
@@ -105,32 +125,30 @@ static int clamp(int value, int minimum, int maximum) {
 }
 
 static int sample_shape(
-	const uint16_t *shape, int shape_frames, int output_frames, int frame
+	const uint16_t *shape, int shape_points, int duration_ms, int elapsed_ms
 ) {
-	if (frame >= output_frames)
-		return shape[shape_frames - 1];
-	if (output_frames == 1)
-		return shape[0];
+	if (elapsed_ms >= duration_ms)
+		return shape[shape_points - 1];
 
 	// Linear interpolation lets timing change without replacing the measured
-	// curves, and gives the original table back exactly at its default length.
-	int position = frame * (shape_frames - 1) * 256 / (output_frames - 1);
+	// curves and makes the displayed duration equal the endpoint time.
+	int position = elapsed_ms * (shape_points - 1) * 256 / duration_ms;
 	int index = position / 256;
 	int fraction = position & 255;
-	if (index >= shape_frames - 1)
-		return shape[shape_frames - 1];
+	if (index >= shape_points - 1)
+		return shape[shape_points - 1];
 
 	return (shape[index] * (256 - fraction) + shape[index + 1] * fraction) / 256;
 }
 
-static int evaluate_pitch(int frame) {
+static int evaluate_pitch(int elapsed_ms) {
 	int shape = sample_shape(
-		pitch_shape, PITCH_SHAPE_FRAMES, envelope_settings.pitch_frames, frame
+		pitch_shape, PITCH_SHAPE_POINTS, envelope_settings.pitch_ms, elapsed_ms
 	);
 	return envelope_settings.pitch_end +
-		(shape - pitch_shape[PITCH_SHAPE_FRAMES - 1]) *
+		(shape - pitch_shape[PITCH_SHAPE_POINTS - 1]) *
 		(envelope_settings.pitch_start - envelope_settings.pitch_end) /
-		(pitch_shape[0] - pitch_shape[PITCH_SHAPE_FRAMES - 1]);
+		(pitch_shape[0] - pitch_shape[PITCH_SHAPE_POINTS - 1]);
 }
 
 static void adjust_envelope_setting(int direction) {
@@ -148,18 +166,21 @@ static void adjust_envelope_setting(int direction) {
 			);
 			break;
 		case 2:
-			envelope_settings.pitch_frames = clamp(
-				envelope_settings.pitch_frames + direction, 4, KICK_INTERVAL
+			envelope_settings.pitch_ms = clamp(
+				envelope_settings.pitch_ms + direction * ENVELOPE_ADJUST_STEP_MS,
+				ENVELOPE_MIN_MS, ENVELOPE_MAX_MS
 			);
 			break;
 		case 3:
-			envelope_settings.amplitude_frames = clamp(
-				envelope_settings.amplitude_frames + direction, 4, KICK_INTERVAL
+			envelope_settings.amplitude_ms = clamp(
+				envelope_settings.amplitude_ms + direction * ENVELOPE_ADJUST_STEP_MS,
+				ENVELOPE_MIN_MS, ENVELOPE_MAX_MS
 			);
 			break;
 		case 4:
-			envelope_settings.noise_frames = clamp(
-				envelope_settings.noise_frames + direction, 1, 12
+			envelope_settings.noise_ms = clamp(
+				envelope_settings.noise_ms + direction * ENVELOPE_ADJUST_STEP_MS,
+				NOISE_MIN_MS, NOISE_MAX_MS
 			);
 			break;
 	}
@@ -211,47 +232,84 @@ static void setup_sound(void) {
 	}
 }
 
-static void apply_envelope_frame(int frame) {
-	sequencer.noise_mix = sample_shape(
-		noise_shape, NOISE_SHAPE_FRAMES, envelope_settings.noise_frames, frame
-	);
-	sequencer.amplitude = sample_shape(
-		amplitude_shape, AMPLITUDE_SHAPE_FRAMES,
-		envelope_settings.amplitude_frames, frame
-	);
-	sequencer.frequency = evaluate_pitch(frame);
+static void build_envelope_table(EnvelopeSample *table) {
+	for (int elapsed_ms = 0; elapsed_ms < KICK_INTERVAL_MS; elapsed_ms++) {
+		int noise_mix = sample_shape(
+			noise_shape, NOISE_SHAPE_POINTS, envelope_settings.noise_ms, elapsed_ms
+		);
+		int amplitude = sample_shape(
+			amplitude_shape, AMPLITUDE_SHAPE_POINTS,
+			envelope_settings.amplitude_ms, elapsed_ms
+		);
+		int frequency = evaluate_pitch(elapsed_ms);
+		int volume = VOICE_VOLUME * amplitude / 256;
 
-	uint16_t pitch = getSPUSampleRate(sequencer.frequency * WAVE_SAMPLE_COUNT);
-	SPU_CH_FREQ(SINE_CHANNEL) = pitch;
-	SPU_CH_FREQ(NOISE_CHANNEL) = pitch;
+		table[elapsed_ms].pitch = getSPUSampleRate(frequency * WAVE_SAMPLE_COUNT);
+		table[elapsed_ms].sine_volume = volume * (256 - noise_mix) / 256;
+		table[elapsed_ms].noise_volume = volume * noise_mix / 256;
+		table[elapsed_ms].noise_mix = noise_mix;
+		table[elapsed_ms].amplitude = amplitude;
+		table[elapsed_ms].frequency = frequency;
+	}
+}
 
-	// Complementary voice gains interpolate noise into sine. Both voices use
-	// the same pitch sweep, so the transient and body remain one sound.
-	int volume = VOICE_VOLUME * sequencer.amplitude / 256;
-	int sine_volume = volume * (256 - sequencer.noise_mix) / 256;
-	int noise_volume = volume * sequencer.noise_mix / 256;
-	set_voice_volume(SINE_CHANNEL, sine_volume);
-	set_voice_volume(NOISE_CHANNEL, noise_volume);
+static void rebuild_envelope(void) {
+	int next_table = active_envelope_table ^ 1;
+	build_envelope_table(envelope_tables[next_table]);
+
+	// The timer must never observe a table while the main loop is rebuilding it.
+	// A single index swap keeps the interrupt-side work constant.
+	FastEnterCriticalSection();
+	active_envelope_table = next_table;
+	FastExitCriticalSection();
+}
+
+static void apply_envelope_tick(int tick) {
+	const EnvelopeSample *sample = &envelope_tables[active_envelope_table][tick];
+
+	SPU_CH_FREQ(SINE_CHANNEL) = sample->pitch;
+	SPU_CH_FREQ(NOISE_CHANNEL) = sample->pitch;
+	set_voice_volume(SINE_CHANNEL, sample->sine_volume);
+	set_voice_volume(NOISE_CHANNEL, sample->noise_volume);
+
+	sequencer.noise_mix = sample->noise_mix;
+	sequencer.amplitude = sample->amplitude;
+	sequencer.frequency = sample->frequency;
 }
 
 static void start_kick(void) {
 	SpuSetKey(0, VOICE_MASK);
 
 	// Apply the first envelope sample before key-on so playback starts with the
-	// intended transient instead of advancing silently until the next VBlank.
-	sequencer.kick_frame = 0;
-	apply_envelope_frame(sequencer.kick_frame);
+	// intended transient instead of advancing silently until the next timer tick.
+	sequencer.kick_tick = 0;
+	apply_envelope_tick(sequencer.kick_tick);
 	SpuSetKey(1, VOICE_MASK);
 }
 
-static void update_sound(void) {
-	sequencer.kick_frame++;
-	if (sequencer.kick_frame >= KICK_INTERVAL) {
+static void timer_tick(void) {
+	if (trigger_requested) {
+		trigger_requested = 0;
 		start_kick();
 		return;
 	}
 
-	apply_envelope_frame(sequencer.kick_frame);
+	sequencer.kick_tick++;
+	if (sequencer.kick_tick >= KICK_INTERVAL_MS) {
+		start_kick();
+		return;
+	}
+
+	apply_envelope_tick(sequencer.kick_tick);
+}
+
+static void setup_envelope_timer(void) {
+	EnterCriticalSection();
+	ChangeClearRCnt(2, 0);
+	InterruptCallback(IRQ_TIMER2, &timer_tick);
+	TIMER_RELOAD(2) = (F_CPU / 8) / ENVELOPE_TICK_RATE;
+	TIMER_CTRL(2) = 0x0258; // CLK/8 input, repeated IRQ on target
+	ExitCriticalSection();
 }
 
 static void setup_rendering(RenderContext *context) {
@@ -355,11 +413,11 @@ static void draw_tile(
 	setRGB0(tile, red, green, blue);
 }
 
-static void draw_balance(RenderContext *context) {
+static void draw_balance(RenderContext *context, const Sequencer *state) {
 	const int x = 54;
 	const int y = 108;
 	const int width = 212;
-	int noise_width = width * sequencer.noise_mix / 256;
+	int noise_width = width * state->noise_mix / 256;
 
 	draw_tile(context, 3, x, y, width, 9, 28, 34, 48);
 	draw_tile(context, 2, x, y, noise_width, 9, 255, 116, 48);
@@ -368,37 +426,37 @@ static void draw_balance(RenderContext *context) {
 	draw_text(context, 273, 105, "SINE");
 
 	draw_tile(context, 3, x, 127, width, 4, 28, 34, 48);
-	draw_tile(context, 2, x, 127, width * sequencer.amplitude / 256, 4, 88, 224, 128);
+	draw_tile(context, 2, x, 127, width * state->amplitude / 256, 4, 88, 224, 128);
 	draw_text(context, 8, 123, "AMP");
 
 	draw_tile(context, 3, x, 142, width, 4, 28, 34, 48);
 	draw_tile(
 		context, 2, x, 142,
-		width * clamp(sequencer.frequency, 0, envelope_settings.pitch_start) /
+		width * clamp(state->frequency, 0, envelope_settings.pitch_start) /
 			envelope_settings.pitch_start,
 		4, 232, 204, 72
 	);
 	draw_text(context, 8, 138, "PITCH");
 }
 
-static void draw_waveform(RenderContext *context) {
+static void draw_waveform(RenderContext *context, const Sequencer *state) {
 	const int graph_left = 19;
 	const int graph_width = 282;
 	const int center_y = 181;
-	int red = 60 + 195 * sequencer.noise_mix / 256;
-	int green = 150 - 34 * sequencer.noise_mix / 256;
-	int blue = 255 - 207 * sequencer.noise_mix / 256;
+	int red = 60 + 195 * state->noise_mix / 256;
+	int green = 150 - 34 * state->noise_mix / 256;
+	int blue = 255 - 207 * state->noise_mix / 256;
 
 	draw_tile(context, 3, graph_left, center_y, graph_width, 1, 38, 48, 66);
 
 	for (int index = 0; index < WAVE_SAMPLE_COUNT - 1; index++) {
 		int sample_a = (
-			sine_samples[index] * (256 - sequencer.noise_mix) +
-			noise_samples[index] * sequencer.noise_mix
+			sine_samples[index] * (256 - state->noise_mix) +
+			noise_samples[index] * state->noise_mix
 		) / 256;
 		int sample_b = (
-			sine_samples[index + 1] * (256 - sequencer.noise_mix) +
-			noise_samples[index + 1] * sequencer.noise_mix
+			sine_samples[index + 1] * (256 - state->noise_mix) +
+			noise_samples[index + 1] * state->noise_mix
 		) / 256;
 		LINE_F2 *line = (LINE_F2 *) allocate_primitive(context, 2, sizeof(LINE_F2));
 		setLineF2(line);
@@ -416,35 +474,45 @@ static void draw_waveform(RenderContext *context) {
 int main(void) {
 	setup_rendering(&render_context);
 	setup_sound();
+	build_envelope_table(envelope_tables[0]);
 	InitPAD(pad_buffers[0], sizeof(pad_buffers[0]), pad_buffers[1], sizeof(pad_buffers[1]));
 	StartPAD();
 
 	uint16_t previous_buttons = 0xffff;
-	int sound_started = 0;
+	trigger_requested = 1;
+	setup_envelope_timer();
 
 	for (;;) {
 		PADTYPE *pad = (PADTYPE *) pad_buffers[0];
 		uint16_t buttons = (pad->stat == 0) ? pad->btn : 0xffff;
 		uint16_t pressed = previous_buttons & ~buttons;
+		int settings_changed = 0;
 		if (pressed & PAD_UP)
 			envelope_settings.selected =
 				(envelope_settings.selected + SETTING_COUNT - 1) % SETTING_COUNT;
 		if (pressed & PAD_DOWN)
 			envelope_settings.selected =
 				(envelope_settings.selected + 1) % SETTING_COUNT;
-		if (pressed & PAD_LEFT)
+		if (pressed & PAD_LEFT) {
 			adjust_envelope_setting(-1);
-		if (pressed & PAD_RIGHT)
+			settings_changed = 1;
+		}
+		if (pressed & PAD_RIGHT) {
 			adjust_envelope_setting(1);
+			settings_changed = 1;
+		}
+		if (settings_changed)
+			rebuild_envelope();
 		int trigger_pressed =
 			(previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS);
-		if (trigger_pressed || !sound_started) {
-			start_kick();
-			sound_started = 1;
-		} else {
-			update_sound();
-		}
+		if (trigger_pressed)
+			trigger_requested = 1;
 		previous_buttons = buttons;
+
+		Sequencer display_state;
+		FastEnterCriticalSection();
+		display_state = sequencer;
+		FastExitCriticalSection();
 
 		draw_text(&render_context, 8, 10, "WAVETABLE KICK SYNTHESIS");
 		draw_setting(
@@ -454,17 +522,17 @@ int main(void) {
 			&render_context, 39, 1, "PITCH END", envelope_settings.pitch_end, "Hz"
 		);
 		draw_setting(
-			&render_context, 51, 2, "PITCH SWEEP", envelope_settings.pitch_frames, "fr"
+			&render_context, 51, 2, "PITCH SWEEP", envelope_settings.pitch_ms, "ms"
 		);
 		draw_setting(
-			&render_context, 63, 3, "AMP DECAY", envelope_settings.amplitude_frames, "fr"
+			&render_context, 63, 3, "AMP DECAY", envelope_settings.amplitude_ms, "ms"
 		);
 		draw_setting(
-			&render_context, 75, 4, "NOISE DECAY", envelope_settings.noise_frames, "fr"
+			&render_context, 75, 4, "NOISE DECAY", envelope_settings.noise_ms, "ms"
 		);
 		draw_text(&render_context, 8, 91, "D-pad: select / adjust");
-		draw_balance(&render_context);
-		draw_waveform(&render_context);
+		draw_balance(&render_context, &display_state);
+		draw_waveform(&render_context, &display_state);
 		draw_text(&render_context, 8, 217, "Cross: trigger kick");
 
 		flip_buffers(&render_context);
