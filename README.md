@@ -69,7 +69,10 @@ Use Up and Down on the D-pad to select an envelope setting, and Left and Right
 to adjust it while the demo is running. The editable settings are the start and
 end pitch, pitch sweep length, amplitude decay length, and noise decay length.
 Envelope times are displayed in milliseconds and change in 5 ms steps. Press
-the key mapped to the Cross button to trigger the kick. To change the mapping,
+the key mapped to the Cross button to trigger the kick. Square triggers a 100 Hz
+sine wave controlled only by the amplitude envelope, and Triangle triggers a
+constant-volume sine wave controlled only by the pitch envelope. These two
+isolated tests use the same 1 kHz timer path as the kick. To change the mapping,
 press Escape and open `Configuration > Controls`. F5 runs the program and F6
 pauses it. Because `run.sh` disables Dynarec and enables the debugger,
 `Debug > Show Assembly` can be used to inspect breakpoints and CPU state.

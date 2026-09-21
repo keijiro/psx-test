@@ -21,9 +21,10 @@
 #define NOISE_CHANNEL     1
 #define VOICE_MASK        ((1 << SINE_CHANNEL) | (1 << NOISE_CHANNEL))
 #define VOICE_VOLUME      0x3000
+#define TEST_FREQUENCY    100
 
 #define ENVELOPE_TICK_RATE       1000
-#define KICK_DURATION_MS         500
+#define ENVELOPE_DURATION_MS     500
 #define ENVELOPE_ADJUST_STEP_MS  5
 #define ENVELOPE_MIN_MS          50
 #define ENVELOPE_MAX_MS          485
@@ -48,11 +49,18 @@ typedef struct {
 } RenderContext;
 
 typedef struct {
-	int kick_tick;
+	int envelope_tick;
 	int noise_mix;
 	int amplitude;
 	int frequency;
 } Sequencer;
+
+typedef enum {
+	PLAYBACK_NONE,
+	PLAYBACK_KICK,
+	PLAYBACK_AMPLITUDE_TEST,
+	PLAYBACK_PITCH_TEST
+} PlaybackMode;
 
 typedef struct {
 	int pitch_start;
@@ -108,11 +116,12 @@ static const uint16_t noise_shape[NOISE_SHAPE_POINTS] = {
 };
 
 static RenderContext render_context;
-static volatile Sequencer sequencer = { KICK_DURATION_MS, 0, 0, 0 };
+static volatile Sequencer sequencer = { ENVELOPE_DURATION_MS, 0, 0, 0 };
 static EnvelopeSettings envelope_settings = { 180, 46, 185, 385, 50, 0 };
-static EnvelopeSample envelope_tables[2][KICK_DURATION_MS];
+static EnvelopeSample envelope_tables[2][ENVELOPE_DURATION_MS];
 static volatile int active_envelope_table;
-static volatile int trigger_requested;
+static volatile PlaybackMode playback_mode;
+static volatile PlaybackMode playback_requested;
 static uint8_t pad_buffers[2][34];
 static uint32_t wave_data[(WAVE_DATA_SIZE * 2) / sizeof(uint32_t)];
 
@@ -233,7 +242,7 @@ static void setup_sound(void) {
 }
 
 static void build_envelope_table(EnvelopeSample *table) {
-	for (int elapsed_ms = 0; elapsed_ms < KICK_DURATION_MS; elapsed_ms++) {
+	for (int elapsed_ms = 0; elapsed_ms < ENVELOPE_DURATION_MS; elapsed_ms++) {
 		int noise_mix = sample_shape(
 			noise_shape, NOISE_SHAPE_POINTS, envelope_settings.noise_ms, elapsed_ms
 		);
@@ -264,41 +273,66 @@ static void rebuild_envelope(void) {
 	FastExitCriticalSection();
 }
 
-static void apply_envelope_tick(int tick) {
+static void apply_envelope_tick(int tick, PlaybackMode mode) {
 	const EnvelopeSample *sample = &envelope_tables[active_envelope_table][tick];
 
-	SPU_CH_FREQ(SINE_CHANNEL) = sample->pitch;
-	SPU_CH_FREQ(NOISE_CHANNEL) = sample->pitch;
-	set_voice_volume(SINE_CHANNEL, sample->sine_volume);
-	set_voice_volume(NOISE_CHANNEL, sample->noise_volume);
-
-	sequencer.noise_mix = sample->noise_mix;
-	sequencer.amplitude = sample->amplitude;
-	sequencer.frequency = sample->frequency;
+	if (mode == PLAYBACK_AMPLITUDE_TEST) {
+		SPU_CH_FREQ(SINE_CHANNEL) =
+			getSPUSampleRate(TEST_FREQUENCY * WAVE_SAMPLE_COUNT);
+		set_voice_volume(SINE_CHANNEL, VOICE_VOLUME * sample->amplitude / 256);
+		set_voice_volume(NOISE_CHANNEL, 0);
+		sequencer.noise_mix = 0;
+		sequencer.amplitude = sample->amplitude;
+		sequencer.frequency = TEST_FREQUENCY;
+	} else if (mode == PLAYBACK_PITCH_TEST) {
+		SPU_CH_FREQ(SINE_CHANNEL) = sample->pitch;
+		set_voice_volume(SINE_CHANNEL, VOICE_VOLUME);
+		set_voice_volume(NOISE_CHANNEL, 0);
+		sequencer.noise_mix = 0;
+		sequencer.amplitude = 256;
+		sequencer.frequency = sample->frequency;
+	} else {
+		SPU_CH_FREQ(SINE_CHANNEL) = sample->pitch;
+		SPU_CH_FREQ(NOISE_CHANNEL) = sample->pitch;
+		set_voice_volume(SINE_CHANNEL, sample->sine_volume);
+		set_voice_volume(NOISE_CHANNEL, sample->noise_volume);
+		sequencer.noise_mix = sample->noise_mix;
+		sequencer.amplitude = sample->amplitude;
+		sequencer.frequency = sample->frequency;
+	}
 }
 
-static void start_kick(void) {
+static void start_playback(PlaybackMode mode) {
 	SpuSetKey(0, VOICE_MASK);
 
 	// Apply the first envelope sample before key-on so playback starts with the
 	// intended transient instead of advancing silently until the next timer tick.
-	sequencer.kick_tick = 0;
-	apply_envelope_tick(sequencer.kick_tick);
-	SpuSetKey(1, VOICE_MASK);
+	playback_mode = mode;
+	sequencer.envelope_tick = 0;
+	apply_envelope_tick(sequencer.envelope_tick, mode);
+	SpuSetKey(1, mode == PLAYBACK_KICK ? VOICE_MASK : (1 << SINE_CHANNEL));
 }
 
 static void timer_tick(void) {
-	if (trigger_requested) {
-		trigger_requested = 0;
-		start_kick();
+	if (playback_requested != PLAYBACK_NONE) {
+		PlaybackMode requested = playback_requested;
+		playback_requested = PLAYBACK_NONE;
+		start_playback(requested);
 		return;
 	}
 
-	if (sequencer.kick_tick + 1 >= KICK_DURATION_MS)
+	if (playback_mode == PLAYBACK_NONE)
 		return;
 
-	sequencer.kick_tick++;
-	apply_envelope_tick(sequencer.kick_tick);
+	if (sequencer.envelope_tick + 1 >= ENVELOPE_DURATION_MS) {
+		SpuSetKey(0, VOICE_MASK);
+		playback_mode = PLAYBACK_NONE;
+		sequencer.amplitude = 0;
+		return;
+	}
+
+	sequencer.envelope_tick++;
+	apply_envelope_tick(sequencer.envelope_tick, playback_mode);
 }
 
 static void setup_envelope_timer(void) {
@@ -500,10 +534,12 @@ int main(void) {
 		}
 		if (settings_changed)
 			rebuild_envelope();
-		int trigger_pressed =
-			(previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS);
-		if (trigger_pressed)
-			trigger_requested = 1;
+		if ((previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS))
+			playback_requested = PLAYBACK_KICK;
+		if ((previous_buttons & PAD_SQUARE) && !(buttons & PAD_SQUARE))
+			playback_requested = PLAYBACK_AMPLITUDE_TEST;
+		if ((previous_buttons & PAD_TRIANGLE) && !(buttons & PAD_TRIANGLE))
+			playback_requested = PLAYBACK_PITCH_TEST;
 		previous_buttons = buttons;
 
 		Sequencer display_state;
@@ -530,6 +566,7 @@ int main(void) {
 		draw_text(&render_context, 8, 91, "D-pad: select / adjust");
 		draw_balance(&render_context, &display_state);
 		draw_waveform(&render_context, &display_state);
+		draw_text(&render_context, 8, 205, "Square: amp only  Triangle: pitch only");
 		draw_text(&render_context, 8, 217, "Cross: trigger kick");
 
 		flip_buffers(&render_context);
