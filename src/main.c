@@ -11,10 +11,19 @@
 #define SCREEN_HEIGHT 240
 #define OT_LENGTH     16
 #define PACKET_BUFFER_LENGTH 8192
-#define SQUARE_SIZE   36
-#define TEST_TONE_ADDR 0x1010
-#define TEST_TONE_CHANNEL 0
-#define TEST_TONE_BLOCK_COUNT 4
+
+#define WAVE_SAMPLE_COUNT 56
+#define WAVE_BLOCK_COUNT  2
+#define WAVE_DATA_SIZE    (WAVE_BLOCK_COUNT * 16)
+#define WAVE_DATA_ADDR    0x1010
+#define SINE_CHANNEL      0
+#define SAW_CHANNEL       1
+#define VOICE_MASK        ((1 << SINE_CHANNEL) | (1 << SAW_CHANNEL))
+#define VOICE_VOLUME      0x2800
+
+#define ATTACK_FRAMES     3
+#define RELEASE_FRAMES    6
+#define SAW_HOLD_FRAMES   6
 
 typedef struct {
 	DISPENV disp_env;
@@ -29,61 +38,151 @@ typedef struct {
 	int active_buffer;
 } RenderContext;
 
+typedef struct {
+	uint16_t frequency;
+	uint8_t duration;
+	const char *name;
+} Note;
+
+typedef struct {
+	int note_index;
+	int note_frame;
+	int morph;
+	int amplitude;
+} Sequencer;
+
+static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
+	 0,  1,  2,  2,  3,  4,  4,  5,  5,  6,  6,  7,  7,  7,
+	 7,  7,  7,  7,  6,  6,  5,  5,  4,  4,  3,  2,  2,  1,
+	 0, -1, -2, -2, -3, -4, -4, -5, -5, -6, -6, -7, -7, -7,
+	-7, -7, -7, -7, -6, -6, -5, -5, -4, -4, -3, -2, -2, -1
+};
+
+// The falling ramp has the same fundamental phase as the sine table. Keeping
+// both tables phase-aligned prevents the crossfade from introducing a large
+// volume dip that would obscure the timbre change being demonstrated.
+static const int8_t saw_samples[WAVE_SAMPLE_COUNT] = {
+	 7,  7,  6,  6,  6,  6,  6,  5,  5,  5,  4,  4,  4,  4,
+	 4,  3,  3,  3,  2,  2,  2,  2,  2,  1,  1,  1,  0,  0,
+	 0,  0,  0, -1, -1, -1, -1, -2, -2, -2, -3, -3, -3, -3,
+	-4, -4, -4, -4, -4, -5, -5, -5, -6, -6, -6, -6, -6, -7
+};
+
+static const Note phrase[] = {
+	{ 262, 30, "C4" },
+	{ 330, 30, "E4" },
+	{ 392, 30, "G4" },
+	{ 494, 45, "B4" },
+	{ 440, 30, "A4" },
+	{ 392, 30, "G4" },
+	{ 330, 30, "E4" },
+	{ 294, 45, "D4" }
+};
+
+#define PHRASE_LENGTH ((int) (sizeof(phrase) / sizeof(phrase[0])))
+
 static RenderContext render_context;
+static Sequencer sequencer;
 static uint8_t pad_buffers[2][34];
-static uint32_t test_tone_data[TEST_TONE_BLOCK_COUNT * 4];
-static int test_tone_frames;
+static uint32_t wave_data[(WAVE_DATA_SIZE * 2) / sizeof(uint32_t)];
+
+static void encode_wavetable(uint8_t *destination, const int8_t *samples) {
+	// Two 28-sample, filter-free ADPCM blocks make one complete cycle. The
+	// small table deliberately uses native four-bit levels so runtime encoding
+	// is exact and the demo has no external asset or host-side build step.
+	for (int block_index = 0; block_index < WAVE_BLOCK_COUNT; block_index++) {
+		uint8_t *block = &destination[block_index * 16];
+		block[0] = 0x01;
+		block[1] = (block_index == 0) ? 0x04 : 0x03;
+
+		for (int byte_index = 0; byte_index < 14; byte_index++) {
+			int sample_index = block_index * 28 + byte_index * 2;
+			uint8_t low = (uint8_t) samples[sample_index] & 0x0f;
+			uint8_t high = (uint8_t) samples[sample_index + 1] & 0x0f;
+			block[byte_index + 2] = low | (high << 4);
+		}
+	}
+}
+
+static void set_voice_volume(int channel, int volume) {
+	SPU_CH_VOL_L(channel) = volume;
+	SPU_CH_VOL_R(channel) = volume;
+}
 
 static void setup_sound(void) {
-	uint8_t *data = (uint8_t *) test_tone_data;
-
-	// A filter-free ADPCM block can represent a square wave using constant
-	// four-bit samples. Looping four such blocks keeps the test tone independent
-	// of external assets while still exercising SPU RAM transfer and playback.
-	for (int block_index = 0; block_index < TEST_TONE_BLOCK_COUNT; block_index++) {
-		uint8_t *block = &data[block_index * 16];
-		block[0] = 0x00;
-		block[1] = (block_index == 0) ? 0x04 : 0x00;
-
-		for (int byte_index = 0; byte_index < 7; byte_index++)
-			block[2 + byte_index] = 0x77;
-		for (int byte_index = 7; byte_index < 14; byte_index++)
-			block[2 + byte_index] = 0x88;
-	}
-	data[(TEST_TONE_BLOCK_COUNT - 1) * 16 + 1] = 0x03;
+	uint8_t *data = (uint8_t *) wave_data;
+	encode_wavetable(data, sine_samples);
+	encode_wavetable(&data[WAVE_DATA_SIZE], saw_samples);
 
 	SpuInit();
 	SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
-	SpuSetTransferStartAddr(TEST_TONE_ADDR);
-	SpuWrite(test_tone_data, sizeof(test_tone_data));
+	SpuSetTransferStartAddr(WAVE_DATA_ADDR);
+	SpuWrite(wave_data, sizeof(wave_data));
 	SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
 
-	SPU_CH_ADDR(TEST_TONE_CHANNEL) = getSPUAddr(TEST_TONE_ADDR);
-	SPU_CH_LOOP_ADDR(TEST_TONE_CHANNEL) = getSPUAddr(TEST_TONE_ADDR);
-	SPU_CH_VOL_L(TEST_TONE_CHANNEL) = 0x1800;
-	SPU_CH_VOL_R(TEST_TONE_CHANNEL) = 0x1800;
-	SPU_CH_ADSR1(TEST_TONE_CHANNEL) = 0x00ff;
-	SPU_CH_ADSR2(TEST_TONE_CHANNEL) = 0x0000;
+	SPU_CH_ADDR(SINE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR);
+	SPU_CH_LOOP_ADDR(SINE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR);
+	SPU_CH_ADDR(SAW_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
+	SPU_CH_LOOP_ADDR(SAW_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
+
+	for (int channel = SINE_CHANNEL; channel <= SAW_CHANNEL; channel++) {
+		set_voice_volume(channel, 0);
+		SPU_CH_ADSR1(channel) = 0x00ff;
+		SPU_CH_ADSR2(channel) = 0x0000;
+	}
 }
 
-static void play_test_tone(void) {
-	SpuSetKey(0, 1 << TEST_TONE_CHANNEL);
-	SPU_CH_FREQ(TEST_TONE_CHANNEL) = getSPUSampleRate(11025);
-	SpuSetKey(1, 1 << TEST_TONE_CHANNEL);
-	test_tone_frames = 15;
+static void start_note(int note_index) {
+	const Note *note = &phrase[note_index];
+	uint16_t pitch = getSPUSampleRate(note->frequency * WAVE_SAMPLE_COUNT);
+
+	SpuSetKey(0, VOICE_MASK);
+	set_voice_volume(SINE_CHANNEL, 0);
+	set_voice_volume(SAW_CHANNEL, 0);
+	SPU_CH_FREQ(SINE_CHANNEL) = pitch;
+	SPU_CH_FREQ(SAW_CHANNEL) = pitch;
+
+	sequencer.note_index = note_index;
+	sequencer.note_frame = 0;
+	sequencer.morph = 0;
+	sequencer.amplitude = 0;
+	SpuSetKey(1, VOICE_MASK);
+}
+
+static void restart_phrase(void) {
+	start_note(0);
 }
 
 static void update_sound(void) {
-	if (test_tone_frames == 0)
-		return;
+	const Note *note = &phrase[sequencer.note_index];
+	int frame = sequencer.note_frame;
+	int remaining = note->duration - frame;
+	int morph_frames = note->duration - RELEASE_FRAMES - SAW_HOLD_FRAMES;
 
-	test_tone_frames--;
-	if (test_tone_frames == 10)
-		SPU_CH_FREQ(TEST_TONE_CHANNEL) = getSPUSampleRate(13888);
-	else if (test_tone_frames == 5)
-		SPU_CH_FREQ(TEST_TONE_CHANNEL) = getSPUSampleRate(16537);
-	else if (test_tone_frames == 0)
-		SpuSetKey(0, 1 << TEST_TONE_CHANNEL);
+	if (frame < ATTACK_FRAMES)
+		sequencer.amplitude = frame * 256 / ATTACK_FRAMES;
+	else if (remaining <= RELEASE_FRAMES)
+		sequencer.amplitude = (remaining - 1) * 256 / (RELEASE_FRAMES - 1);
+	else
+		sequencer.amplitude = 256;
+
+	if (frame < morph_frames)
+		sequencer.morph = frame * 256 / morph_frames;
+	else
+		sequencer.morph = 256;
+
+	// These complementary gain envelopes are the wavetable interpolation:
+	// sine * (1 - morph) + saw * morph. Both voices share pitch and key-on, so
+	// their samples remain locked while only their balance changes.
+	int volume = VOICE_VOLUME * sequencer.amplitude / 256;
+	int sine_volume = volume * (256 - sequencer.morph) / 256;
+	int saw_volume = volume * sequencer.morph / 256;
+	set_voice_volume(SINE_CHANNEL, sine_volume);
+	set_voice_volume(SAW_CHANNEL, saw_volume);
+
+	sequencer.note_frame++;
+	if (sequencer.note_frame >= note->duration)
+		start_note((sequencer.note_index + 1) % PHRASE_LENGTH);
 }
 
 static void setup_rendering(RenderContext *context) {
@@ -96,7 +195,7 @@ static void setup_rendering(RenderContext *context) {
 	SetDefDispEnv(&context->buffers[1].disp_env, 0, SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT);
 
 	for (int index = 0; index < 2; index++) {
-		setRGB0(&context->buffers[index].draw_env, 8, 32, 56);
+		setRGB0(&context->buffers[index].draw_env, 7, 12, 24);
 		context->buffers[index].draw_env.isbg = 1;
 	}
 
@@ -140,12 +239,64 @@ static void draw_text(RenderContext *context, int x, int y, const char *text) {
 	assert(context->next_packet <= &buffer->packet_buffer[PACKET_BUFFER_LENGTH]);
 }
 
-static int clamp(int value, int minimum, int maximum) {
-	if (value < minimum)
-		return minimum;
-	if (value > maximum)
-		return maximum;
-	return value;
+static void draw_tile(
+	RenderContext *context, int depth, int x, int y, int width, int height,
+	int red, int green, int blue
+) {
+	TILE *tile = (TILE *) allocate_primitive(context, depth, sizeof(TILE));
+	setTile(tile);
+	setXY0(tile, x, y);
+	setWH(tile, width, height);
+	setRGB0(tile, red, green, blue);
+}
+
+static void draw_balance(RenderContext *context) {
+	const int x = 54;
+	const int y = 88;
+	const int width = 212;
+	int sine_width = width * (256 - sequencer.morph) / 256;
+
+	draw_tile(context, 3, x, y, width, 9, 28, 34, 48);
+	draw_tile(context, 2, x, y, sine_width, 9, 60, 150, 255);
+	draw_tile(context, 2, x + sine_width, y, width - sine_width, 9, 255, 116, 48);
+	draw_text(context, 8, 85, "SINE");
+	draw_text(context, 273, 85, "SAW");
+
+	draw_tile(context, 3, x, 107, width, 4, 28, 34, 48);
+	draw_tile(context, 2, x, 107, width * sequencer.amplitude / 256, 4, 88, 224, 128);
+	draw_text(context, 8, 103, "AMP");
+}
+
+static void draw_waveform(RenderContext *context) {
+	const int graph_left = 19;
+	const int graph_width = 282;
+	const int center_y = 166;
+	int red = 60 + 195 * sequencer.morph / 256;
+	int green = 150 - 34 * sequencer.morph / 256;
+	int blue = 255 - 207 * sequencer.morph / 256;
+
+	draw_tile(context, 3, graph_left, center_y, graph_width, 1, 38, 48, 66);
+
+	for (int index = 0; index < WAVE_SAMPLE_COUNT - 1; index++) {
+		int sample_a = (
+			sine_samples[index] * (256 - sequencer.morph) +
+			saw_samples[index] * sequencer.morph
+		) / 256;
+		int sample_b = (
+			sine_samples[index + 1] * (256 - sequencer.morph) +
+			saw_samples[index + 1] * sequencer.morph
+		) / 256;
+		LINE_F2 *line = (LINE_F2 *) allocate_primitive(context, 2, sizeof(LINE_F2));
+		setLineF2(line);
+		setXY2(
+			line,
+			graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
+			center_y - sample_a * 6,
+			graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
+			center_y - sample_b * 6
+		);
+		setRGB0(line, red, green, blue);
+	}
 }
 
 int main(void) {
@@ -153,51 +304,28 @@ int main(void) {
 	setup_sound();
 	InitPAD(pad_buffers[0], sizeof(pad_buffers[0]), pad_buffers[1], sizeof(pad_buffers[1]));
 	StartPAD();
-	play_test_tone();
+	restart_phrase();
 
-	int x = 32;
-	int y = 96;
-	int velocity_x = 1;
-	int frame = 0;
 	uint16_t previous_buttons = 0xffff;
 
 	for (;;) {
 		update_sound();
 
-		x += velocity_x;
-		if ((x <= 0) || (x >= SCREEN_WIDTH - SQUARE_SIZE)) {
-			velocity_x = -velocity_x;
-			x = clamp(x, 0, SCREEN_WIDTH - SQUARE_SIZE);
-		}
-
 		PADTYPE *pad = (PADTYPE *) pad_buffers[0];
 		uint16_t buttons = (pad->stat == 0) ? pad->btn : 0xffff;
-		if (!(buttons & PAD_LEFT))
-			x -= 2;
-		if (!(buttons & PAD_RIGHT))
-			x += 2;
-		if (!(buttons & PAD_UP))
-			y -= 2;
-		if (!(buttons & PAD_DOWN))
-			y += 2;
 		if ((previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS))
-			play_test_tone();
+			restart_phrase();
 		previous_buttons = buttons;
 
-		x = clamp(x, 0, SCREEN_WIDTH - SQUARE_SIZE);
-		y = clamp(y, 56, SCREEN_HEIGHT - SQUARE_SIZE);
-
-		TILE *square = (TILE *) allocate_primitive(&render_context, 1, sizeof(TILE));
-		setTile(square);
-		setXY0(square, x, y);
-		setWH(square, SQUARE_SIZE, SQUARE_SIZE);
-		setRGB0(square, 255, 192 + ((frame >> 3) & 63), 48);
-
-		draw_text(&render_context, 8, 12, "PSn00bSDK validated");
-		draw_text(&render_context, 8, 26, "D-pad / arrow keys: move");
-		draw_text(&render_context, 8, 40, "Cross button: play test sound");
+		draw_text(&render_context, 8, 10, "SPU WAVETABLE MORPH");
+		draw_text(&render_context, 8, 27, "Two phase-locked voices, one note");
+		draw_text(&render_context, 8, 43, "Complementary envelopes interpolate");
+		draw_text(&render_context, 8, 62, "NOTE");
+		draw_text(&render_context, 54, 62, phrase[sequencer.note_index].name);
+		draw_balance(&render_context);
+		draw_waveform(&render_context);
+		draw_text(&render_context, 8, 217, "Cross: restart phrase");
 
 		flip_buffers(&render_context);
-		frame++;
 	}
 }

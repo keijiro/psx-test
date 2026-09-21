@@ -1,5 +1,16 @@
 # Validation record
 
+## Wavetable morph demo
+
+On 2026-09-21, the single-channel square-wave test was replaced with the
+two-voice sine-to-saw wavetable morph demo. Both Debug and Release builds
+completed successfully and produced MIPS-I ELF and PS-X EXE artifacts. The
+Debug executable was loaded with OpenBIOS in PCSX-Redux and continued running
+without an emulator or SDK error.
+
+The audio output itself has not been checked on original hardware. The
+remaining sections record the initial environment validation from 2026-09-16.
+
 Validation date: 2026-09-16 (Asia/Tokyo)
 
 The host was macOS 26.6.2 on arm64, with Xcode 27.0, Apple Clang 21.0.0,
