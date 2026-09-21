@@ -23,7 +23,7 @@
 #define VOICE_VOLUME      0x3000
 
 #define ENVELOPE_TICK_RATE       1000
-#define KICK_INTERVAL_MS         500
+#define KICK_DURATION_MS         500
 #define ENVELOPE_ADJUST_STEP_MS  5
 #define ENVELOPE_MIN_MS          50
 #define ENVELOPE_MAX_MS          485
@@ -108,9 +108,9 @@ static const uint16_t noise_shape[NOISE_SHAPE_POINTS] = {
 };
 
 static RenderContext render_context;
-static volatile Sequencer sequencer;
+static volatile Sequencer sequencer = { KICK_DURATION_MS, 0, 0, 0 };
 static EnvelopeSettings envelope_settings = { 180, 46, 185, 385, 50, 0 };
-static EnvelopeSample envelope_tables[2][KICK_INTERVAL_MS];
+static EnvelopeSample envelope_tables[2][KICK_DURATION_MS];
 static volatile int active_envelope_table;
 static volatile int trigger_requested;
 static uint8_t pad_buffers[2][34];
@@ -233,7 +233,7 @@ static void setup_sound(void) {
 }
 
 static void build_envelope_table(EnvelopeSample *table) {
-	for (int elapsed_ms = 0; elapsed_ms < KICK_INTERVAL_MS; elapsed_ms++) {
+	for (int elapsed_ms = 0; elapsed_ms < KICK_DURATION_MS; elapsed_ms++) {
 		int noise_mix = sample_shape(
 			noise_shape, NOISE_SHAPE_POINTS, envelope_settings.noise_ms, elapsed_ms
 		);
@@ -294,12 +294,10 @@ static void timer_tick(void) {
 		return;
 	}
 
-	sequencer.kick_tick++;
-	if (sequencer.kick_tick >= KICK_INTERVAL_MS) {
-		start_kick();
+	if (sequencer.kick_tick + 1 >= KICK_DURATION_MS)
 		return;
-	}
 
+	sequencer.kick_tick++;
 	apply_envelope_tick(sequencer.kick_tick);
 }
 
@@ -479,7 +477,6 @@ int main(void) {
 	StartPAD();
 
 	uint16_t previous_buttons = 0xffff;
-	trigger_requested = 1;
 	setup_envelope_timer();
 
 	for (;;) {

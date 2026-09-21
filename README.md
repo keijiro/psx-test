@@ -2,13 +2,13 @@
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
 original PlayStation from C source on Apple Silicon Macs. The demo synthesizes
-a kick drum at 120 BPM with two SPU voices. A short complementary envelope
-crossfades a fixed noise wavetable into a sine wavetable, while a second
-envelope rapidly sweeps both voices from 180 Hz to 46 Hz. A nonlinear amplitude
-decay shapes the body and leaves a short silent gap before retriggering. A
-1 kHz hardware timer drives the envelopes independently of video rendering.
-Both SPU ADPCM tables are generated in memory, so no external audio assets are
-required.
+a manually triggered kick drum with two SPU voices. A short complementary
+envelope crossfades a fixed noise wavetable into a sine wavetable, while a
+second envelope rapidly sweeps both voices from 180 Hz to 46 Hz. A nonlinear
+amplitude decay shapes the body, then the synth remains silent until the Cross
+button is pressed again. A 1 kHz hardware timer drives the envelopes
+independently of video rendering. Both SPU ADPCM tables are generated in
+memory, so no external audio assets are required.
 
 ## Initial setup
 
@@ -81,7 +81,7 @@ pauses it. Because `run.sh` disables Dynarec and enables the debugger,
   Windows executable.
 - `build/release/`: Equivalent artifacts for the Release configuration.
 - `src/main.c`: Runtime SPU ADPCM wavetable generation, two-voice noise-to-sine
-  morph, kick envelopes, retriggering, and visualization.
+  morph, button-triggered kick envelopes, and visualization.
 - `scripts/env.sh`: zsh environment configuration for the SDK, emulator, and
   `PATH`.
 - `scripts/setup.sh`: Fetches, verifies, builds, and installs pinned
