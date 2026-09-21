@@ -2,8 +2,9 @@
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
 original PlayStation from C source on Apple Silicon Macs. The sample uses
-double buffering to draw text and a moving square. With the default
-PCSX-Redux keyboard mapping, the arrow keys also move the square.
+double buffering to draw text and a moving square. It also generates a short
+SPU test tone without external assets. With the default PCSX-Redux keyboard
+mapping, the arrow keys move the square and the Cross button replays the tone.
 
 ## Initial setup
 
@@ -60,11 +61,11 @@ built-in debugger enabled. Set `PCSX_REDUX`, `PCSX_REDUX_BIOS`, or
 `PCSX_REDUX_DATA` to use a different emulator binary, BIOS, or personal data
 directory, respectively.
 
-The default PCSX-Redux configuration maps the arrow keys to the D-pad. To
-change the mapping, press Escape and open `Configuration > Controls`. F5 runs
-the program and F6 pauses it. Because `run.sh` disables Dynarec and enables the
-debugger, `Debug > Show Assembly` can be used to inspect breakpoints and CPU
-state.
+The default PCSX-Redux configuration maps the arrow keys to the D-pad. Press
+the key mapped to the Cross button to replay the test tone. To change the
+mapping, press Escape and open `Configuration > Controls`. F5 runs the program
+and F6 pauses it. Because `run.sh` disables Dynarec and enables the debugger,
+`Debug > Show Assembly` can be used to inspect breakpoints and CPU state.
 
 ## Artifacts and directories
 
