@@ -31,7 +31,7 @@
 #define ENVELOPE_ADJUST_STEP_MS  5
 #define ENVELOPE_MIN_MS          50
 #define ENVELOPE_MAX_MS          485
-#define NOISE_MIN_MS             15
+#define NOISE_MIN_MS              0
 #define NOISE_MAX_MS             185
 #define PITCH_SHAPE_POINTS       12
 #define SETTING_COUNT            5
@@ -146,6 +146,7 @@ static EnvelopeSettings envelope_settings = { 180, 46, 185, 385, 50, 0 };
 static EnvelopeProgram envelope_programs[2];
 static volatile int active_envelope_program;
 static volatile int playback_active;
+static int pitch_envelope_started;
 static volatile int trigger_requested;
 static uint8_t pad_buffers[2][34];
 static uint32_t wave_data[(WAVE_DATA_SIZE * 2) / sizeof(uint32_t)];
@@ -446,7 +447,7 @@ static void apply_envelope_tick(int tick) {
 	sequencer.frequency = sample->frequency;
 }
 
-static void sample_spu_envelopes(void) {
+static int sample_spu_envelopes(void) {
 	int sine_level = SPU_CH_ADSR_VOL(SINE_CHANNEL) & ADSR_MAX_LEVEL;
 	int noise_level = SPU_CH_ADSR_VOL(NOISE_CHANNEL) & ADSR_MAX_LEVEL;
 	int combined_level = sine_level + noise_level;
@@ -455,6 +456,7 @@ static void sample_spu_envelopes(void) {
 		noise_level * 256 / combined_level : 0;
 	sequencer.amplitude =
 		clamp(combined_level, 0, ADSR_MAX_LEVEL) * 256 / ADSR_MAX_LEVEL;
+	return sine_level;
 }
 
 static void start_playback(void) {
@@ -468,6 +470,7 @@ static void start_playback(void) {
 	// Apply the first envelope sample before key-on so playback starts with the
 	// intended transient instead of advancing silently until the next timer tick.
 	playback_active = 1;
+	pitch_envelope_started = 0;
 	sequencer.envelope_tick = 0;
 	apply_envelope_tick(sequencer.envelope_tick);
 	sequencer.noise_mix = 256;
@@ -484,6 +487,16 @@ static void timer_tick(void) {
 
 	if (!playback_active)
 		return;
+
+	// PCSX-Redux starts SPU voices in its audio mixer and reports level 1 while
+	// key-on is queued but not mixed. Wait for the first real attack step, then
+	// preserve the requested peak for a full tick before starting the sweep.
+	if (!pitch_envelope_started) {
+		if (sample_spu_envelopes() <= 1)
+			return;
+		pitch_envelope_started = 1;
+		return;
+	}
 
 	if (sequencer.envelope_tick + 1 >= ENVELOPE_DURATION_MS) {
 		SpuSetKey(0, VOICE_MASK);
