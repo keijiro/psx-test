@@ -1,5 +1,19 @@
 # Validation record
 
+## Predictive ADPCM sine encoding
+
+On 2026-09-21, the sine wavetable's direct four-bit quantization was replaced
+with runtime PSX ADPCM encoding. The encoder evaluates every supported
+predictor and shift value against the reconstructed samples and carries the
+decoder history across repeated encoding passes to stabilize the loop
+boundary. The sine source retains the previous peak level while increasing
+from 15 amplitude steps to a 16-bit table.
+
+An independent decoder simulation measured approximately 5.57% THD in the old
+table and 0.17% in the steady-state encoded loop. Both Debug and Release builds
+completed successfully. The revised waveform has not been evaluated by ear or
+checked on original hardware.
+
 ## SPU ADSR wavetable envelopes
 
 On 2026-09-21, per-millisecond CPU volume writes were replaced with native SPU

@@ -16,6 +16,10 @@
 #define WAVE_SAMPLE_COUNT 56
 #define WAVE_BLOCK_COUNT  2
 #define WAVE_DATA_SIZE    (WAVE_BLOCK_COUNT * 16)
+#define ADPCM_BLOCK_SAMPLE_COUNT 28
+#define ADPCM_FILTER_COUNT       5
+#define ADPCM_ENCODING_PASSES    8
+#define SINE_SAMPLE_PEAK         14336
 #define WAVE_DATA_ADDR    0x1010
 #define SINE_CHANNEL      0
 #define NOISE_CHANNEL     1
@@ -75,11 +79,28 @@ typedef struct {
 	uint16_t noise_adsr2;
 } EnvelopeProgram;
 
-static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
-	 0,  1,  2,  2,  3,  4,  4,  5,  5,  6,  6,  7,  7,  7,
-	 7,  7,  7,  7,  6,  6,  5,  5,  4,  4,  3,  2,  2,  1,
-	 0, -1, -2, -2, -3, -4, -4, -5, -5, -6, -6, -7, -7, -7,
-	-7, -7, -7, -7, -6, -6, -5, -5, -4, -4, -3, -2, -2, -1
+typedef struct {
+	int previous_1;
+	int previous_2;
+} AdpcmHistory;
+
+static const int adpcm_filter_coefficients[ADPCM_FILTER_COUNT][2] = {
+	{   0,   0 },
+	{  60,   0 },
+	{ 115, -52 },
+	{  98, -55 },
+	{ 122, -60 }
+};
+
+static const int16_t sine_samples[WAVE_SAMPLE_COUNT] = {
+	     0,   1605,   3190,   4735,   6220,   7627,   8938,
+	 10137,  11208,  12139,  12916,  13532,  13977,  14246,
+	 14336,  14246,  13977,  13532,  12916,  12139,  11208,
+	 10137,   8938,   7627,   6220,   4735,   3190,   1605,
+	     0,  -1605,  -3190,  -4735,  -6220,  -7627,  -8938,
+	-10137, -11208, -12139, -12916, -13532, -13977, -14246,
+	-14336, -14246, -13977, -13532, -12916, -12139, -11208,
+	-10137,  -8938,  -7627,  -6220,  -4735,  -3190,  -1605
 };
 
 // This fixed, zero-centered noise cycle makes the experiment deterministic.
@@ -227,10 +248,111 @@ static void adjust_envelope_setting(int direction) {
 	}
 }
 
-static void encode_wavetable(uint8_t *destination, const int8_t *samples) {
+static int divide_rounded(int value, int divisor) {
+	if (value >= 0)
+		return (value + divisor / 2) / divisor;
+	return -((-value + divisor / 2) / divisor);
+}
+
+static int predict_adpcm_sample(const AdpcmHistory *history, int filter) {
+	return (
+		history->previous_1 * adpcm_filter_coefficients[filter][0] +
+		history->previous_2 * adpcm_filter_coefficients[filter][1] + 32
+	) >> 6;
+}
+
+static int decode_adpcm_sample(
+	int nibble, int shift, int filter, AdpcmHistory *history
+) {
+	int sample = predict_adpcm_sample(history, filter) +
+		nibble * (1 << (12 - shift));
+	sample = clamp(sample, -32768, 32767);
+	history->previous_2 = history->previous_1;
+	history->previous_1 = sample;
+	return sample;
+}
+
+static void encode_adpcm_block(
+	uint8_t *destination, const int16_t *samples, uint8_t flags,
+	AdpcmHistory *history
+) {
+	uint64_t best_error = UINT64_MAX;
+	int best_filter = 0;
+	int best_shift = 0;
+	int8_t best_nibbles[ADPCM_BLOCK_SAMPLE_COUNT];
+
+	// Test every legal predictor and range against the samples reconstructed
+	// by the SPU. Selecting from decoded error prevents quantization error from
+	// accumulating unnoticed through the predictor history.
+	for (int filter = 0; filter < ADPCM_FILTER_COUNT; filter++) {
+		for (int shift = 0; shift <= 12; shift++) {
+			AdpcmHistory candidate_history = *history;
+			uint64_t error_sum = 0;
+			int step = 1 << (12 - shift);
+			int8_t nibbles[ADPCM_BLOCK_SAMPLE_COUNT];
+
+			for (int index = 0; index < ADPCM_BLOCK_SAMPLE_COUNT; index++) {
+				int prediction = predict_adpcm_sample(&candidate_history, filter);
+				int nibble = clamp(
+					divide_rounded(samples[index] - prediction, step), -8, 7
+				);
+				int decoded = decode_adpcm_sample(
+					nibble, shift, filter, &candidate_history
+				);
+				int error = decoded - samples[index];
+				nibbles[index] = nibble;
+				error_sum += (int64_t) error * error;
+			}
+
+			if (error_sum < best_error) {
+				best_error = error_sum;
+				best_filter = filter;
+				best_shift = shift;
+				for (int index = 0; index < ADPCM_BLOCK_SAMPLE_COUNT; index++)
+					best_nibbles[index] = nibbles[index];
+			}
+		}
+	}
+
+	destination[0] = (best_filter << 4) | best_shift;
+	destination[1] = flags;
+	for (int index = 0; index < ADPCM_BLOCK_SAMPLE_COUNT; index += 2) {
+		decode_adpcm_sample(
+			best_nibbles[index], best_shift, best_filter, history
+		);
+		decode_adpcm_sample(
+			best_nibbles[index + 1], best_shift, best_filter, history
+		);
+		destination[2 + index / 2] =
+			((uint8_t) best_nibbles[index] & 0x0f) |
+			((uint8_t) best_nibbles[index + 1] << 4);
+	}
+}
+
+static void encode_sine_wavetable(uint8_t *destination) {
+	AdpcmHistory history = { 0, 0 };
+
+	// Predictor state carries across the loop boundary. Re-encoding the same
+	// cycle converges on the history the SPU will have during sustained playback;
+	// the sine ADSR masks the less accurate first cycle after a cold key-on.
+	for (int pass = 0; pass < ADPCM_ENCODING_PASSES; pass++) {
+		for (int block_index = 0; block_index < WAVE_BLOCK_COUNT; block_index++) {
+			uint8_t flags = (block_index == 0) ? 0x04 : 0x03;
+			encode_adpcm_block(
+				&destination[block_index * 16],
+				&sine_samples[block_index * ADPCM_BLOCK_SAMPLE_COUNT], flags,
+				&history
+			);
+		}
+	}
+}
+
+static void encode_direct_wavetable(
+	uint8_t *destination, const int8_t *samples
+) {
 	// Two 28-sample, filter-free ADPCM blocks make one complete cycle. The
-	// small table deliberately uses native four-bit levels so runtime encoding
-	// is exact and the demo has no external asset or host-side build step.
+	// noise table deliberately uses native four-bit levels so its exact sequence
+	// is preserved without predictor feedback.
 	for (int block_index = 0; block_index < WAVE_BLOCK_COUNT; block_index++) {
 		uint8_t *block = &destination[block_index * 16];
 		block[0] = 0x01;
@@ -252,8 +374,8 @@ static void set_voice_volume(int channel, int volume) {
 
 static void setup_sound(void) {
 	uint8_t *data = (uint8_t *) wave_data;
-	encode_wavetable(data, sine_samples);
-	encode_wavetable(&data[WAVE_DATA_SIZE], noise_samples);
+	encode_sine_wavetable(data);
+	encode_direct_wavetable(&data[WAVE_DATA_SIZE], noise_samples);
 
 	SpuInit();
 	SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
@@ -522,22 +644,26 @@ static void draw_waveform(RenderContext *context, const Sequencer *state) {
 	draw_tile(context, 3, graph_left, center_y, graph_width, 1, 38, 48, 66);
 
 	for (int index = 0; index < WAVE_SAMPLE_COUNT - 1; index++) {
+		int sine_a = sine_samples[index] * 28 / SINE_SAMPLE_PEAK;
+		int sine_b = sine_samples[index + 1] * 28 / SINE_SAMPLE_PEAK;
+		int noise_a = noise_samples[index] * 4;
+		int noise_b = noise_samples[index + 1] * 4;
 		int sample_a = (
-			sine_samples[index] * (256 - state->noise_mix) +
-			noise_samples[index] * state->noise_mix
+			sine_a * (256 - state->noise_mix) +
+			noise_a * state->noise_mix
 		) / 256;
 		int sample_b = (
-			sine_samples[index + 1] * (256 - state->noise_mix) +
-			noise_samples[index + 1] * state->noise_mix
+			sine_b * (256 - state->noise_mix) +
+			noise_b * state->noise_mix
 		) / 256;
 		LINE_F2 *line = (LINE_F2 *) allocate_primitive(context, 2, sizeof(LINE_F2));
 		setLineF2(line);
 		setXY2(
 			line,
 			graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_a * 4,
+			center_y - sample_a,
 			graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_b * 4
+			center_y - sample_b
 		);
 		setRGB0(line, red, green, blue);
 	}
