@@ -1,14 +1,18 @@
-# 検証記録
+# Validation record
 
-検証日：2026-09-16（Asia/Tokyo）
+Validation date: 2026-09-16 (Asia/Tokyo)
 
-ホストは macOS 26.6.2 / arm64、Xcode 27.0、Apple Clang 21.0.0、Homebrew 6.0.22。固定した版とチェックサムは `toolchain.lock` を参照。
+The host was macOS 26.6.2 on arm64, with Xcode 27.0, Apple Clang 21.0.0,
+and Homebrew 6.0.22. See `toolchain.lock` for the pinned versions and checksums.
 
-## セットアップとツールチェーン
+## Setup and toolchain
 
-`./scripts/setup.sh` を実行し、CMake 4.4.3、Ninja 1.13.2、binutils 2.47、GCC 16.2.0、PSn00bSDK v0.24、PCSX-Redux build 250 を導入した。2回目の実行は約8秒で終了し、正常な SDK とエミュレーターの再構築を省いた。
+Running `./scripts/setup.sh` installed CMake 4.4.3, Ninja 1.13.2,
+binutils 2.47, GCC 16.2.0, PSn00bSDK v0.24, and PCSX-Redux build 250. A
+second run finished in about eight seconds and skipped rebuilding the working
+SDK and emulator.
 
-最小 C 関数を次の条件でコンパイルした。
+A minimal C function was compiled with these options:
 
 ```sh
 printf '%s\n' 'int add(int a, int b) { return a + b; }' |
@@ -16,21 +20,29 @@ printf '%s\n' 'int add(int a, int b) { return a + b; }' |
 mipsel-none-elf-objdump -f build/toolchain-check/probe.o
 ```
 
-結果は `elf32-littlemips`、`architecture: mips:3000`。`file` は `ELF 32-bit LSB relocatable, MIPS-I` と判定した。コンパイラー、アセンブラー、リンカー、objdump は全て起動した。
+The result was `elf32-littlemips`, `architecture: mips:3000`; `file` identified
+it as `ELF 32-bit LSB relocatable, MIPS-I`. The compiler, assembler, linker,
+and objdump all ran successfully.
 
-PSn00bSDK v0.24 は Apple Clang 21 と GCC 16 に対して3点の限定修正を要した。
+PSn00bSDK v0.24 required three narrow compatibility fixes for Apple Clang 21
+and GCC 16:
 
-- ホスト用 LZP 圧縮コードで `stdlib.h` を常に読み込む。
-- 描画キューの関数ポインターを実装どおり3引数型にする。
-- macOS の `mkpsxiso` で `stat64` を `stat` に写像する。
+- Always include `stdlib.h` in the host-side LZP compressor.
+- Give the draw-queue function pointer the three-argument type used by the
+  implementation.
+- Map `stat64` to `stat` in `mkpsxiso` on macOS.
 
-修正は `patches/psn00bsdk-v0.24-macos-clang.patch` に保存した。警告やエラーの広域抑制は使っていない。SDK の Debug/Release ライブラリ、`elf2x`、`mkpsxiso` を含むホストツールをビルドし、`.local/psn00bsdk` にインストールした。
+The fixes are stored in `patches/psn00bsdk-v0.24-macos-clang.patch`. No broad
+warning or error suppression was used. The SDK's Debug and Release libraries
+and host tools, including `elf2x` and `mkpsxiso`, were built and installed in
+`.local/psn00bsdk`.
 
-SDK 付属 beginner/hello も別途ビルドし、MIPS-I ELF と `PS-X EXE` シグネチャを確認した。
+The SDK's `beginner/hello` sample was also built separately and verified as a
+MIPS-I ELF with a `PS-X EXE` signature.
 
-## プロジェクトのビルド
+## Project build
 
-新しい zsh から公開手順を実行した。
+The documented procedure was run from a new zsh session:
 
 ```sh
 source scripts/env.sh
@@ -40,39 +52,54 @@ cmake --preset release
 cmake --build --preset release
 ```
 
-結果：
+Results:
 
-| 生成物 | 判定 | SHA-256 |
+| Artifact | Identification | SHA-256 |
 | --- | --- | --- |
-| `build/debug/hello.elf` | MIPS-I LSB ELF、デバッグ情報・シンボルあり | `25bdfa29b042fef7da69afd0cd85a1af56b8e3d9a3a2afb8da5461a8de048c2e` |
-| `build/debug/hello.exe` | Sony PlayStation executable、`PS-X EXE` | `2f7a01440be49b3f89f7a44d2b570b48ca0b74511fc6c6470e1945b573775904` |
+| `build/debug/hello.elf` | MIPS-I LSB ELF with debug data and symbols | `25bdfa29b042fef7da69afd0cd85a1af56b8e3d9a3a2afb8da5461a8de048c2e` |
+| `build/debug/hello.exe` | Sony PlayStation executable, `PS-X EXE` | `2f7a01440be49b3f89f7a44d2b570b48ca0b74511fc6c6470e1945b573775904` |
 | `build/release/hello.elf` | MIPS-I LSB ELF | `f54c7d1492d8e12d68f603dd80af396d336e90058ce243bb31fa3b803158d0da` |
-| `build/release/hello.exe` | Sony PlayStation executable、`PS-X EXE` | `8c36aa4934675c5012f9e83837cf4c6edb5279989b7e5125e7e83d571e71f1eb` |
+| `build/release/hello.exe` | Sony PlayStation executable, `PS-X EXE` | `8c36aa4934675c5012f9e83837cf4c6edb5279989b7e5125e7e83d571e71f1eb` |
 
-最終ソースを新規の `build/final-clean-20260916` に configure/build し、既存中間生成物なしでも同じ PS-X EXE を生成した。
+The final source was configured and built in a new
+`build/final-clean-20260916` directory, producing the same PS-X EXE without
+relying on existing intermediate artifacts.
 
-## エミュレーターと画面
+## Emulator and display
 
-公式 AppDistrib の macOS ARM build 250 を使用した。バンドル内の `openbios.bin` を PCSX-Redux が `OpenBIOS detected (0b0359a7)` と認識し、`hello.exe` を直接ロードした。検証ログは `build/validation/pcsx-debug.log` にある。
+The official AppDistrib macOS ARM build 250 was used. PCSX-Redux recognized
+the bundled `openbios.bin` as `OpenBIOS detected (0b0359a7)` and loaded
+`hello.exe` directly. The validation log is at
+`build/validation/pcsx-debug.log`.
 
-画面で次を確認した。
+The following behavior was visually verified:
 
-- 濃紺背景に `PSN00BSDK VALIDATED` と `D-PAD / ARROW KEYS: MOVE` が表示された。
-- 黄色の四角形がフレームごとに水平方向へ移動し、色も時間変化した。メニュー表示時の計測は約59.9 FPSだった。
-- 20回の上矢印入力により、四角形の上端が画面上で約125ピクセル上へ移動した。
-- 背景色と先頭文字列を変更し、再ビルド・再起動後に新しい濃紺色と `VALIDATED` 表示へ変わった。
+- `PSN00BSDK VALIDATED` and `D-PAD / ARROW KEYS: MOVE` appeared on a dark
+  navy background.
+- The yellow square moved horizontally each frame and changed color over time.
+  The measured rate was about 59.9 FPS while the menu was visible.
+- Twenty Up Arrow inputs moved the top of the square about 125 screen pixels
+  upward.
+- After changing the background color and first line of text, rebuilding and
+  restarting showed the new dark navy color and `VALIDATED` text.
 
-PCSX-Redux が保存した設定でも `Dynarec: false`、`Debug.Debug: true`、方向キーの SDL scancode（Left 80、Right 79、Up 82、Down 81）を確認した。
+The configuration saved by PCSX-Redux was also checked for `Dynarec: false`,
+`Debug.Debug: true`, and the arrow-key SDL scancodes: Left 80, Right 79, Up 82,
+and Down 81.
 
-## デバッガー
+## Debugger
 
-Debug ELF のシンボルから `main = 0x80010474` を取得した。PCSX-Redux を `-interpreter -debugger` で起動し、Lua API で同アドレスに実行ブレークポイントを設定した。
+The Debug ELF symbols identified `main = 0x80010474`. PCSX-Redux was launched
+with `-interpreter -debugger`, and an execution breakpoint was set at that
+address through the Lua API.
 
-ログには次が記録された。
+The log recorded:
 
 ```text
 Breakpoint triggered: PC=0x80010474 - Cause: 80010474::Exec::4 (Lua Breakpoint)
 ```
 
-Assembly 画面で PC の黄色矢印が `RAM:80010474` を指し、そのメモリー上の命令ワードが `27bdffd8`（`addiu sp,sp,-40`）であることを確認した。F5 で再開すると PC 矢印が消え、その後 GPU とパッドの初期化ログが継続した。
-
+In the Assembly view, the yellow PC arrow pointed to `RAM:80010474`, where the
+instruction word was `27bdffd8` (`addiu sp,sp,-40`). After execution resumed
+with F5, the PC arrow disappeared and GPU and controller initialization
+continued in the log.

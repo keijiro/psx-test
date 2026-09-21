@@ -1,73 +1,93 @@
-# 初代 PlayStation homebrew 開発環境の構築計画
+# Plan for an original PlayStation homebrew development environment
 
-## 目的
+## Objective
 
-`/Users/keijiro/Projects/psx` に、C のソースコードから初代 PlayStation 向け実行ファイルを生成し、macOS 上のエミュレーターで実行・検証できる開発環境を構築する。
+Build a development environment in `/Users/keijiro/Projects/psx` that can
+produce executables for the original PlayStation from C source, then run and
+validate them in an emulator on macOS.
 
-この文書は AI エージェント向けの実施計画である。計画の作成と環境構築の実行は別の作業とし、構築を依頼されたエージェントは以下の工程を順に進める。
+This document is an implementation plan for AI agents. Planning and executing
+the environment setup are separate tasks; an agent asked to perform the setup
+should complete the stages below in order.
 
-## 前提と採用構成
+## Assumptions and selected components
 
-計画作成時点の確認結果：
+Observations made when this plan was written:
 
-- 作業ディレクトリは空で、既存の Git リポジトリーはない。
-- ホストは Apple Silicon（arm64）、macOS 26.6.2。
-- Homebrew、Clang、Git、make は PATH 上に存在する。
-- CMake、Ninja、MIPS 向け GCC、Docker、エミュレーターの CLI は PATH 上に見つからない。GUI アプリのインストール有無は未確認。
-- SDK のビルドやエミュレーターの実行は未検証。
+- The working directory was empty, with no existing Git repository.
+- The host was Apple Silicon (arm64) running macOS 26.6.2.
+- Homebrew, Clang, Git, and make were available on `PATH`.
+- CMake, Ninja, a MIPS GCC toolchain, Docker, and an emulator CLI were not found
+  on `PATH`. The presence of GUI applications was not checked.
+- Building the SDK and running the emulator had not been validated.
 
-実行開始時に環境を再確認する。上記の観測結果を、そのまま現在の状態や動作保証として扱わない。
+Recheck the environment before starting implementation. Do not treat these
+observations as the current state or as a guarantee that anything works.
 
-| 用途 | 採用候補 | 方針 |
+| Purpose | Selected candidate | Policy |
 | --- | --- | --- |
-| アプリケーション言語 | C | 最初のサンプルと完了判定は C で行う |
-| クロスコンパイラー | GCC / binutils、`mipsel-none-elf` | macOS arm64 上で動作するものを使用 |
-| SDK | PSn00bSDK | 公式 CMake 定義とテンプレートを利用 |
-| ビルド | CMake + Ninja | Debug / Release プリセットを用意 |
-| エミュレーター | PCSX-Redux の Mac ARM 版 | 実行と内蔵デバッガーによる検証 |
-| BIOS | OpenBIOS | 初期検証の BIOS として使用 |
-| CD イメージ生成 | SDK に付属する `mkpsxiso` | 初期完了後の任意工程 |
+| Application language | C | Use C for the initial sample and acceptance criteria |
+| Cross compiler | GCC / binutils, `mipsel-none-elf` | Use builds that run on macOS arm64 |
+| SDK | PSn00bSDK | Use its official CMake definitions and templates |
+| Build system | CMake + Ninja | Provide Debug and Release presets |
+| Emulator | PCSX-Redux Mac ARM build | Validate execution with the built-in debugger |
+| BIOS | OpenBIOS | Use it for initial validation |
+| CD image generation | SDK-provided `mkpsxiso` | Leave as an optional post-completion step |
 
-基本的な処理の流れ：
+Basic processing flow:
 
 ```text
-C ソース + PSn00bSDK
-        ↓ CMake / Ninja / MIPS GCC
-hello.elf（デバッグ情報を保持）
-        ↓ SDK の実行形式変換
-hello.exe（PS-X EXE 形式）
-        ↓ PCSX-Redux + OpenBIOS
-描画・入力・デバッグの確認
+C source + PSn00bSDK
+        | CMake / Ninja / MIPS GCC
+        v
+hello.elf (retains debug information)
+        | SDK executable conversion
+        v
+hello.exe (PS-X EXE format)
+        | PCSX-Redux + OpenBIOS
+        v
+Rendering, input, and debugging validation
 ```
 
-`hello.exe` は PlayStation 用の PS-X EXE であり、Windows の実行ファイルではない。
+`hello.exe` is a PS-X EXE for PlayStation, not a Windows executable.
 
-## 作業範囲
+## Scope
 
-必須範囲は、ツールチェーン、SDK、エミュレーター、C のサンプル、ビルド・実行スクリプト、再構築に必要な記録である。
+The required scope covers the toolchain, SDK, emulator, C sample, build and run
+scripts, and the records needed to reproduce the environment.
 
-以下は初期完成の条件に含めない：
+The following are not required for initial completion:
 
-- C++ のサンプルや標準ライブラリーの対応確認。
-- CD-ROM、音声、メモリーカード、3D 描画の実装。
-- 実機転送・実機での検証。
-- VS Code や外部 GDB との統合、CI の構築。
-- DuckStation による追加検証。
+- A C++ sample or standard-library compatibility checks.
+- CD-ROM, audio, memory-card, or 3D-rendering implementation.
+- Transfer to or validation on real hardware.
+- VS Code or external GDB integration, or CI setup.
+- Additional validation with DuckStation.
 
-Sony の公式 SDK、PsyQ、実機 BIOS のダウンロードを構築手順に含めない。OpenBIOS で問題が出た場合は原因を調査し、別の BIOS を自動取得して回避しない。
+Do not include downloads of Sony's official SDK, PsyQ, or a real console BIOS
+in the setup procedure. If OpenBIOS causes a problem, investigate the cause; do
+not automatically download a different BIOS as a workaround.
 
-## エージェントの進め方
+## Agent workflow
 
-- 適用される `AGENTS.md` とユーザーの最新指示を確認し、既存ファイルや作業中の変更を保存する。
-- 工程の依存関係を守り、各工程の完了条件を満たしてから次へ進む。
-- 通常の実装判断は自律的に行う。環境から確認できる事項をユーザーに質問しない。
-- 構築時に本書のチェックリストを更新し、失敗・採用バージョン・検証結果を記録する。
-- 未検証の手順や想定コマンドを、実行済み・動作確認済みと表記しない。
-- インストールや起動に OS またはツールの承認が必要な場合は所定の仕組みに従う。保護機能を一括無効化しない。
-- 必要な操作が環境上実行できない場合は、独立して進められる作業を完了させ、未完了項目と必要な操作を具体的に報告する。
-- 環境全体の入れ替え、Docker ランタイムや VM の新規導入など、構成を大きく変える場合は、その理由と影響を提示する。
+- Read the applicable `AGENTS.md` files and latest user instructions, and
+  preserve existing files and work in progress.
+- Respect dependencies between stages and satisfy each stage's completion
+  criteria before moving to the next.
+- Make routine implementation decisions autonomously. Do not ask the user for
+  facts that can be determined from the environment.
+- Update this document's checklist during setup, recording failures, selected
+  versions, and validation results.
+- Do not describe untested procedures or speculative commands as completed or
+  verified.
+- When installation or launch requires approval from the OS or a tool, use its
+  designated mechanism. Do not disable security protections globally.
+- If the environment prevents a required operation, finish independent work
+  and report the incomplete items and required actions precisely.
+- Before making a major configuration change, such as replacing the environment
+  or introducing a new Docker runtime or VM, explain its reason and impact.
 
-## 予定するファイル構成
+## Planned file layout
 
 ```text
 psx/
@@ -85,75 +105,103 @@ psx/
 │   └── run.sh
 ├── docs/
 │   └── validation.md
-├── third_party/          # 取得した SDK など
-├── .local/               # SDK・ツール・エミュレーターの配置先
-└── build/               # ビルド生成物と必要なログ
+├── third_party/          # Downloaded SDK and related sources
+├── .local/               # SDK, tools, and emulator installations
+└── build/                # Build artifacts and required logs
 ```
 
-空のディレクトリや不要な設定ファイルを先回りして作らない。`third_party/`、`.local/`、`build/`、個人用設定は `.gitignore` に含める。Git の初期化は必要に応じて行い、コミット・リモート登録・公開はこの計画の必須作業に含めない。
+Do not create empty directories or unnecessary configuration files in advance.
+Add `third_party/`, `.local/`, `build/`, and personal configuration to
+`.gitignore`. Initialize Git when needed; commits, remote setup, and publication
+are not required parts of this plan.
 
-## 工程 0：環境と依存関係の確認
+## Stage 0: Inspect the environment and dependencies
 
-- [x] OS、CPU、空き容量、Xcode Command Line Tools、Homebrew の状態を確認する。
-- [x] CMake、Ninja、GCC / binutils、既存 SDK の有無とバージョンを調べる。
-- [x] PCSX-Redux の既存アプリと実行バイナリーの有無を確認する。
-- [x] 公式資料と配布元を確認し、取得する SDK・コンパイラー・エミュレーターの候補を決める。
+- [x] Check the OS, CPU, free space, Xcode Command Line Tools, and Homebrew.
+- [x] Check the versions and availability of CMake, Ninja, GCC/binutils, and any
+  existing SDK.
+- [x] Check for an existing PCSX-Redux app and executable.
+- [x] Review official documentation and distribution sources, then select SDK,
+  compiler, and emulator candidates.
 
-依存パッケージの具体的な一覧は、採用する macOS 用ツールチェーン定義から決定する。既存パッケージを無差別に更新しない。
+Determine the exact host dependency list from the selected macOS toolchain
+definition. Do not indiscriminately upgrade existing packages.
 
-完了条件：追加導入が必要なもの、利用できる既存環境、配置先が明確になっている。
+Completion criterion: required additions, usable existing components, and
+installation locations are known.
 
-## 工程 1：MIPS ツールチェーンの導入
+## Stage 1: Install the MIPS toolchain
 
-- [x] CMake、Ninja、および必要なホスト側依存パッケージを導入する。
-- [x] PCSX-Redux の macOS 用 GCC / binutils ビルド定義を確認する。
-- [x] macOS arm64 用 `mipsel-none-elf` ツールチェーンを導入する。
-- [x] コンパイラー、アセンブラー、リンカー、バイナリー検査ツールの起動を確認する。
-- [x] 最小の C ファイルをオブジェクトに変換し、MIPS の little-endian オブジェクトであることを確認する。
+- [x] Install CMake, Ninja, and required host dependencies.
+- [x] Inspect the PCSX-Redux macOS GCC/binutils build definitions.
+- [x] Install a `mipsel-none-elf` toolchain for macOS arm64.
+- [x] Verify that the compiler, assembler, linker, and binary inspection tools
+  start successfully.
+- [x] Compile a minimal C file and verify that it is a little-endian MIPS object.
 
-優先するのはプロジェクト内の `.local/` への配置である。Homebrew のビルド定義をそのまま使う方が適切な場合は、Homebrew 管理下に配置し、そのパスと取得方法を記録する。
+Prefer installation under the project's `.local/` directory. If using the
+Homebrew build definitions directly is more appropriate, install under
+Homebrew management and record the path and acquisition method.
 
-GCC のバージョン番号だけを理由に最新版を採用しない。SDK との組み合わせを検証し、動作した組み合わせを固定する。ホスト用 Clang や Linux 用 `mipsel-linux-gnu` を PlayStation 向けツールチェーンの代用にしない。
+Do not choose the latest GCC solely because of its version number. Validate its
+combination with the SDK and pin a combination that works. Do not substitute
+host Clang or a Linux `mipsel-linux-gnu` toolchain for a PlayStation toolchain.
 
-完了条件：C コードから対象 CPU 向けオブジェクトを生成でき、ツールチェーンの取得元とバージョンを記録している。
+Completion criterion: C code can be compiled into an object for the target CPU,
+and the toolchain source and version are recorded.
 
-## 工程 2：PSn00bSDK のビルドと疎通確認
+## Stage 2: Build and smoke-test PSn00bSDK
 
-- [x] PSn00bSDK を特定のタグまたはコミットで取得し、必要な submodule を取得する。
-- [x] 選定したツールチェーンを使い、SDK とホスト用ツールをビルドする。
-- [x] SDK を `.local/psn00bsdk/` に配置する。
-- [x] `PSN00BSDK_LIBS` と必要な PATH を設定する `scripts/env.sh` を用意する。
-- [x] SDK 付属の最小テンプレートまたは描画サンプルをビルドする。
-- [x] ELF と PS-X EXE の生成を確認する。
+- [x] Fetch PSn00bSDK at a specific tag or commit, including required
+  submodules.
+- [x] Build the SDK and host tools with the selected toolchain.
+- [x] Install the SDK under `.local/psn00bsdk/`.
+- [x] Provide `scripts/env.sh` to set `PSN00BSDK_LIBS` and the required `PATH`.
+- [x] Build an SDK-provided minimal template or rendering sample.
+- [x] Confirm production of ELF and PS-X EXE files.
 
-コンパイルフラグ、リンカースクリプト、実行形式の変換は SDK の CMake 定義に委ねる。ホスト上で実行する変換ツールと、PlayStation 向けに生成するコードを混同しない。
+Leave compiler flags, the linker script, and executable conversion to the SDK's
+CMake definitions. Do not confuse conversion tools that run on the host with
+code generated for the PlayStation.
 
-SDK の公式資料は macOS での検証が限定的であると説明している。ビルドに修正が必要な場合は原因を絞り、パッチと適用手順をプロジェクト内に残す。単に警告やエラーを広範囲に抑制して通さない。
+The SDK's official documentation describes macOS validation as limited. If the
+build needs a fix, isolate the cause and retain the patch and application
+instructions in the project. Do not make it pass by broadly suppressing
+warnings or errors.
 
-完了条件：付属サンプルの `*.elf` と `*.exe` を生成でき、EXE の先頭シグネチャが `PS-X EXE` であることを確認している。
+Completion criterion: the bundled sample produces `*.elf` and `*.exe`, and the
+EXE begins with the `PS-X EXE` signature.
 
-## 工程 3：C アプリケーションと開発操作の整備
+## Stage 3: Implement the C application and development workflow
 
-- [x] 公式テンプレートを基に、ルートの CMake プロジェクトを作成する。
-- [x] Debug / Release の configure・build プリセットを用意する。
-- [x] `src/main.c` に文字表示、フレームごとに動く図形、方向キー操作を実装する。
-- [x] 描画バッファーの更新と VBlank 同期を SDK の推奨方法に合わせる。
-- [x] `hello.elf` と `hello.exe` を生成する。
-- [x] `scripts/setup.sh` に確定した構築手順を実装する。
+- [x] Create a root CMake project based on the official template.
+- [x] Provide Debug and Release configure/build presets.
+- [x] Implement text, an animated shape, and directional input in `src/main.c`.
+- [x] Follow the SDK's recommended drawing-buffer update and VBlank sync
+  procedure.
+- [x] Produce `hello.elf` and `hello.exe`.
+- [x] Implement the finalized setup procedure in `scripts/setup.sh`.
 
-最初は単純な 2D サンプルとし、外部アセットを必要としない内容にする。入力の確認には、エミュレーターのキーボード割り当てを使用できるようにする。
+Keep the first sample to simple 2D graphics with no external assets. Make it
+possible to validate input through the emulator's keyboard mapping.
 
-スクリプトの要件：
+Script requirements:
 
-- 作業ディレクトリに依存せず、スクリプト自身の位置からプロジェクトルートを解決する。
-- `env.sh` は zsh で source でき、ユーザーのシェル設定ファイルを変更しない。
-- パスを適切に引用し、生成物・ダウンロード・インストールの配置先を限定する。
-- `setup.sh` は再実行可能にし、正常な既存インストールを毎回再構築しない。
-- 取得失敗やビルド失敗を検出し、不完全なインストールを完了扱いにしない。
-- ソースのコミット、配布物の識別子、利用可能なチェックサムを `toolchain.lock` に記録する。
-- 再構築時には固定した依存関係を使い、更新は明示的な操作にする。
+- Resolve the project root from each script's location, independent of the
+  working directory.
+- Make `env.sh` sourceable from zsh without changing the user's shell
+  configuration files.
+- Quote paths correctly and constrain artifact, download, and installation
+  destinations.
+- Make `setup.sh` rerunnable without rebuilding a valid existing installation
+  every time.
+- Detect fetch and build failures, and do not treat incomplete installations as
+  complete.
+- Record source commits, distribution identifiers, and available checksums in
+  `toolchain.lock`.
+- Use pinned dependencies for reconstruction; make upgrades explicit.
 
-構築後に提供する操作：
+Provide this workflow after setup:
 
 ```sh
 ./scripts/setup.sh
@@ -163,88 +211,116 @@ cmake --build --preset debug
 ./scripts/run.sh
 ```
 
-上記は実装するインターフェースであり、計画作成時点で利用できるコマンドではない。
+This is the interface to implement, not a set of commands known to work when
+the plan was written.
 
-完了条件：独自の C サンプルを Debug / Release の両方でビルドでき、環境設定と再構築の手順がスクリプト化されている。
+Completion criterion: the custom C sample builds in both Debug and Release, and
+environment setup and reconstruction are scripted.
 
-## 工程 4：エミュレーターの導入と実行操作の整備
+## Stage 4: Install the emulator and provide the run workflow
 
-- [x] PCSX-Redux の Mac ARM 配布物を公式の配布先から取得する。既存の適切な導入がある場合は再利用する。
-- [x] 採用した配布物の識別情報を記録する。
-- [x] OpenBIOS の同梱有無を確認し、利用可能な OpenBIOS を設定する。必要なら公式手順で取得・ビルドする。
-- [x] エミュレーター本体を起動し、BIOS と描画の初期化を確認する。
-- [x] `hello.exe` の直接ロードと実行を確認する。
-- [x] 検証した CLI オプションを使用する `scripts/run.sh` を作成する。
-- [x] コントローラーの方向キーとボタンをキーボードに割り当てる。
+- [x] Fetch the PCSX-Redux Mac ARM distribution from its official source, or
+  reuse a suitable existing installation.
+- [x] Record identifying information for the selected distribution.
+- [x] Check whether OpenBIOS is bundled and configure an available copy. If
+  necessary, obtain or build it using the official procedure.
+- [x] Launch the emulator and verify BIOS and graphics initialization.
+- [x] Load and run `hello.exe` directly.
+- [x] Create `scripts/run.sh` using validated CLI options.
+- [x] Map the controller D-pad and buttons to the keyboard.
 
-CLI オプションと macOS アプリ内の実行ファイルの位置は、採用した版のヘルプ・公式資料・実ファイルで確認する。推測した起動コマンドを確定手順として残さない。
+Verify CLI options and the executable location inside the macOS application
+against the selected version's help, official documentation, and actual files.
+Do not record a guessed launch command as the definitive procedure.
 
-`run.sh` は実行ファイルがない場合に明確なエラーを出し、ビルド操作を案内する。エミュレーターの配置先を環境変数または個人用設定で上書きできるようにする。
+`run.sh` must report a clear error and show the build command when no executable
+exists. Allow the emulator path to be overridden through an environment
+variable or personal configuration.
 
-完了条件：プロジェクトの操作手順から、生成した EXE を PCSX-Redux で起動できる。
+Completion criterion: the generated EXE can be launched in PCSX-Redux from the
+documented project workflow.
 
-## 工程 5：動作・デバッグ・再構築の検証
+## Stage 5: Validate execution, debugging, and reconstruction
 
-- [x] 文字と図形が意図した位置・色で表示される。
-- [x] 数秒以上の連続実行で図形が更新され、フリーズや描画崩れがない。
-- [x] キーボードの方向キー入力でサンプルの状態が変化する。
-- [x] CPU デバッグを有効にし、必要に応じて Dynarec を無効にする。
-- [x] 既知の関数または命令アドレスにブレークポイントを置き、停止と再開を確認する。
-- [x] 停止中にレジスターまたはメモリーを確認する。アドレスの特定には ELF のシンボルや逆アセンブル結果を利用する。
-- [x] 表示文字または色を変更し、再ビルド・再起動で変更が反映されることを確認する。
-- [x] 最終ソースから別の空のビルドディレクトリにビルドし、既存の中間生成物に依存しないことを確認する。
-- [x] 新しいシェルで `env.sh` からビルド・実行まで行えることを確認する。
+- [x] Text and the shape appear at the intended positions and colors.
+- [x] The shape updates for several seconds without freezes or rendering
+  corruption.
+- [x] Arrow-key input changes the sample state.
+- [x] CPU debugging is enabled and Dynarec is disabled when needed.
+- [x] A breakpoint at a known function or instruction address stops execution,
+  and execution can resume.
+- [x] Registers or memory are inspected while stopped, using ELF symbols or
+  disassembly to identify the address.
+- [x] A text or color change appears after rebuilding and restarting.
+- [x] The final source builds in a separate empty build directory without
+  relying on existing intermediate artifacts.
+- [x] A new shell can proceed from `env.sh` through build and execution.
 
-GUI 操作・画面取得が可能なら、それを使って実際の表示と入力を確認する。プロセスが起動しただけでは動作検証の完了としない。GUI を操作・観測できない環境では、その制約とユーザー側で必要な確認を明記し、該当チェックを未完了のまま残す。
+When GUI interaction and screenshots are available, use them to validate actual
+rendering and input. A running process alone is not sufficient validation. If
+the environment cannot operate or observe the GUI, state that limitation and
+the user-side checks required, and leave the relevant checkbox incomplete.
 
-完了条件：描画、入力、デバッグ、変更反映、クリーンビルドが確認されている。
+Completion criterion: rendering, input, debugging, change propagation, and a
+clean build are verified.
 
-## 工程 6：引き継ぎ資料の完成
+## Stage 6: Complete handoff documentation
 
-- [x] `README.md` に初回導入、日常のビルド・実行、エミュレーター設定を記載する。
-- [x] `README.md` に各生成物の意味と主要なディレクトリの用途を記載する。
-- [x] `toolchain.lock` に SDK、GCC、binutils、エミュレーター、OpenBIOS の採用版を記録する。同梱物は同梱元の識別情報を残す。
-- [x] ホスト側依存パッケージと、動作確認した CMake / Ninja のバージョンを記録する。
-- [x] `docs/validation.md` に実行コマンド、結果、エミュレーター設定、必要なログまたは画面の記録をまとめる。
-- [x] 本書のチェックリストを実際の進捗に合わせて更新する。
+- [x] Document initial setup, routine build/run steps, and emulator settings in
+  `README.md`.
+- [x] Explain each artifact and the purpose of major directories in `README.md`.
+- [x] Record the selected SDK, GCC, binutils, emulator, and OpenBIOS versions in
+  `toolchain.lock`, retaining identifying information for bundled components.
+- [x] Record host dependencies and the validated CMake and Ninja versions.
+- [x] Summarize commands, results, emulator settings, and required logs or
+  screenshots in `docs/validation.md`.
+- [x] Update this checklist to reflect actual progress.
 
-完了報告には、実装した内容、通常使用するコマンド、検証結果、残る制約を含める。必須工程が未完了なら「環境構築完了」と報告しない。
+The completion report must include the implementation, routine commands,
+validation results, and remaining limitations. Do not report the environment
+setup as complete while any required stage remains incomplete.
 
-## 問題発生時の対応
+## Troubleshooting
 
-| 問題 | 調査・対応 |
+| Problem | Investigation and response |
 | --- | --- |
-| GCC / binutils が macOS でビルドできない | 採用版、ホスト依存関係、公式 macOS ビルド定義との差を確認する。互換性のある版へ変更した場合は記録する |
-| SDK の CMake 設定が失敗する | CMake の対応バージョン、ツールチェーンの PATH、`PSN00BSDK_LIBS`、submodule の取得状態を確認する |
-| ホスト用ツールと対象用コードが混在する | CMake の構成、コンパイラー、生成物のアーキテクチャを調べる |
-| EXE が起動しない、黒画面になる | 付属サンプルでも再現するか確認し、形式・ロード手順・BIOS 初期化・描画処理の順に切り分ける |
-| OpenBIOS 使用時に問題が起きる | SDK サンプルとの比較とログ・デバッガーで確認する。実機 BIOS が必要と判明したら、その依存関係を報告する |
-| デバッガーで停止できない | デバッガー有効化、Dynarec の設定、ブレークポイントのアドレスと実行対象を確認する |
-| ネイティブ構築の問題が解消しない | ビルドを Linux コンテナーに移し、実行を macOS に残す代替案を提示する。既存のコンテナー環境がなければ導入の影響も明示する |
+| GCC/binutils does not build on macOS | Compare the selected version and host dependencies with the official macOS build definitions; record any switch to a compatible version |
+| SDK CMake configuration fails | Check supported CMake versions, the toolchain `PATH`, `PSN00BSDK_LIBS`, and submodule state |
+| Host tools and target code are mixed | Inspect the CMake configuration, compiler, and artifact architecture |
+| The EXE does not start or shows a black screen | Test the bundled sample, then isolate the format, loading procedure, BIOS initialization, and rendering in that order |
+| OpenBIOS causes a problem | Compare against SDK samples and inspect logs and the debugger; report the dependency if a real-hardware BIOS proves necessary |
+| The debugger does not stop | Check debugger enablement, Dynarec configuration, the breakpoint address, and the running target |
+| Native build problems remain unresolved | Propose moving the build to a Linux container while retaining execution on macOS; if no container runtime exists, also explain the installation impact |
 
-Linux コンテナーを使用する場合も、ホストの CPU と配布ツールチェーンの CPU を照合する。Apple Silicon 上で Linux x86_64 の配布物をそのまま実行できると仮定しない。
+Even when using a Linux container, compare the host CPU with the distributed
+toolchain's CPU. Do not assume an x86_64 Linux distribution runs directly on
+Apple Silicon.
 
-## 任意の後続工程
+## Optional follow-up stages
 
-必須工程を終えた後、追加依頼に応じて実施する。
+Perform these only on request after the required stages are complete:
 
-1. CD 起動：`SYSTEM.CNF`、ディスク構成 XML、外部アセットを追加し、`mkpsxiso` で BIN/CUE を生成する。ディスクからの起動とアセット読み込みを別途検証する。
-2. 別エミュレーター：利用者が用意した適切な BIOS を使用して DuckStation で検証する。初期構成への導入は必須としない。
-3. ソースレベルデバッグ：MIPS 対応 GDB と PCSX-Redux の GDB サーバーを接続し、ELF のシンボルを使って C ソース上で停止する。
-4. 自動化：必要な場合に限り、エミュレーターの制御機能を使ったスモークテストや CI を追加する。
+1. CD boot: add `SYSTEM.CNF`, a disc-layout XML file, and external assets;
+   produce BIN/CUE files with `mkpsxiso`; separately validate disc boot and
+   asset loading.
+2. Alternative emulator: validate with DuckStation using a suitable BIOS
+   supplied by the user; do not require it in the initial configuration.
+3. Source-level debugging: connect a MIPS-capable GDB to the PCSX-Redux GDB
+   server and use ELF symbols to stop in C source.
+4. Automation: add smoke tests or CI using emulator control features only when
+   needed.
 
-## 参照資料
+## References
 
-実行時には、採用するバージョンに対応した内容を確認する。
+At execution time, verify that each source applies to the selected version.
 
 - [PSn00bSDK](https://github.com/Lameguy64/PSn00bSDK)
-- [PSn00bSDK インストール手順](https://github.com/Lameguy64/PSn00bSDK/blob/master/doc/installation.md)
-- [PSn00bSDK ツールチェーン構築](https://github.com/Lameguy64/PSn00bSDK/blob/master/doc/toolchain.md)
-- [PSn00bSDK CMake 設定](https://github.com/Lameguy64/PSn00bSDK/blob/master/doc/cmake_reference.md)
-- [PSn00bSDK 公式テンプレート](https://github.com/Lameguy64/PSn00bSDK/tree/master/template)
-- [PCSX-Redux と macOS 導入手順](https://github.com/grumpycoders/pcsx-redux)
-- [PCSX-Redux macOS 用ツールチェーン定義](https://github.com/grumpycoders/pcsx-redux/tree/main/tools/macos-mips)
+- [PSn00bSDK installation](https://github.com/Lameguy64/PSn00bSDK/blob/master/doc/installation.md)
+- [PSn00bSDK toolchain setup](https://github.com/Lameguy64/PSn00bSDK/blob/master/doc/toolchain.md)
+- [PSn00bSDK CMake configuration](https://github.com/Lameguy64/PSn00bSDK/blob/master/doc/cmake_reference.md)
+- [PSn00bSDK official template](https://github.com/Lameguy64/PSn00bSDK/tree/master/template)
+- [PCSX-Redux and macOS setup](https://github.com/grumpycoders/pcsx-redux)
+- [PCSX-Redux macOS toolchain definitions](https://github.com/grumpycoders/pcsx-redux/tree/main/tools/macos-mips)
 - [OpenBIOS](https://github.com/grumpycoders/pcsx-redux/tree/main/src/mips/openbios)
-- [PCSX-Redux デバッグ機能](https://pcsx-redux.consoledev.net/Debugging/introduction/)
-- [PCSX-Redux GDB サーバー](https://pcsx-redux.consoledev.net/Debugging/gdb-server/)
-- [DuckStation](https://github.com/stenzek/duckstation)
+- [PCSX-Redux debugging](https://pcsx-redux.consoledev.net/Debugging/introduction/)
+- [PCSX-Redux GDB server](https://pcsx-redux.consoledev.net/Debugging/gdb-server/)
