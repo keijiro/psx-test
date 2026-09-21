@@ -17,13 +17,12 @@
 #define WAVE_DATA_SIZE    (WAVE_BLOCK_COUNT * 16)
 #define WAVE_DATA_ADDR    0x1010
 #define SINE_CHANNEL      0
-#define SAW_CHANNEL       1
-#define VOICE_MASK        ((1 << SINE_CHANNEL) | (1 << SAW_CHANNEL))
-#define VOICE_VOLUME      0x2800
+#define NOISE_CHANNEL     1
+#define VOICE_MASK        ((1 << SINE_CHANNEL) | (1 << NOISE_CHANNEL))
+#define VOICE_VOLUME      0x3000
 
-#define ATTACK_FRAMES     3
-#define RELEASE_FRAMES    6
-#define SAW_HOLD_FRAMES   6
+#define KICK_INTERVAL     30
+#define ENVELOPE_FRAMES   24
 
 typedef struct {
 	DISPENV disp_env;
@@ -39,16 +38,10 @@ typedef struct {
 } RenderContext;
 
 typedef struct {
-	uint16_t frequency;
-	uint8_t duration;
-	const char *name;
-} Note;
-
-typedef struct {
-	int note_index;
-	int note_frame;
-	int morph;
+	int kick_frame;
+	int noise_mix;
 	int amplitude;
+	int frequency;
 } Sequencer;
 
 static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
@@ -58,28 +51,36 @@ static const int8_t sine_samples[WAVE_SAMPLE_COUNT] = {
 	-7, -7, -7, -7, -6, -6, -5, -5, -4, -4, -3, -2, -2, -1
 };
 
-// The falling ramp has the same fundamental phase as the sine table. Keeping
-// both tables phase-aligned prevents the crossfade from introducing a large
-// volume dip that would obscure the timbre change being demonstrated.
-static const int8_t saw_samples[WAVE_SAMPLE_COUNT] = {
-	 7,  7,  6,  6,  6,  6,  6,  5,  5,  5,  4,  4,  4,  4,
-	 4,  3,  3,  3,  2,  2,  2,  2,  2,  1,  1,  1,  0,  0,
-	 0,  0,  0, -1, -1, -1, -1, -2, -2, -2, -3, -3, -3, -3,
-	-4, -4, -4, -4, -4, -5, -5, -5, -6, -6, -6, -6, -6, -7
+// This fixed, zero-centered noise cycle makes the experiment deterministic.
+// It repeats like any other wavetable, but it disappears before the period is
+// perceived as a pitched tone.
+static const int8_t noise_samples[WAVE_SAMPLE_COUNT] = {
+	 6, -4,  2,  7, -3, -6,  5, -1, -5,  3,  6, -4,  1, -7,
+	 7, -2, -5,  4, -8,  6,  0, -3,  5, -6,  2,  7, -4, -1,
+	-7,  4,  1, -5,  7, -3, -5,  5, -2,  6, -6,  3,  0, -7,
+	 5, -4,  7, -1, -5,  2,  6, -8,  4, -2, -6,  7,  1,  1
 };
 
-static const Note phrase[] = {
-	{ 262, 30, "C4" },
-	{ 330, 30, "E4" },
-	{ 392, 30, "G4" },
-	{ 494, 45, "B4" },
-	{ 440, 30, "A4" },
-	{ 392, 30, "G4" },
-	{ 330, 30, "E4" },
-	{ 294, 45, "D4" }
+// At 60 Hz these first four steps make the transient change from noise to
+// sine in about 50 ms. The pitch drops an octave and a half in about 100 ms,
+// while the longer nonlinear level decay leaves the sine body audible.
+static const uint16_t pitch_envelope[ENVELOPE_FRAMES] = {
+	180, 145, 116,  94,  78,  66,  58,  53,
+	 50,  48,  47,  46,  46,  46,  46,  46,
+	 46,  46,  46,  46,  46,  46,  46,  46
 };
 
-#define PHRASE_LENGTH ((int) (sizeof(phrase) / sizeof(phrase[0])))
+static const uint16_t amplitude_envelope[ENVELOPE_FRAMES] = {
+	256, 250, 239, 225, 208, 190, 172, 154,
+	137, 121, 106,  92,  79,  67,  56,  46,
+	 37,  29,  22,  16,  11,   7,   3,   0
+};
+
+static const uint16_t noise_envelope[ENVELOPE_FRAMES] = {
+	256, 112,  32,   0,   0,   0,   0,   0,
+	  0,   0,   0,   0,   0,   0,   0,   0,
+	  0,   0,   0,   0,   0,   0,   0,   0
+};
 
 static RenderContext render_context;
 static Sequencer sequencer;
@@ -112,7 +113,7 @@ static void set_voice_volume(int channel, int volume) {
 static void setup_sound(void) {
 	uint8_t *data = (uint8_t *) wave_data;
 	encode_wavetable(data, sine_samples);
-	encode_wavetable(&data[WAVE_DATA_SIZE], saw_samples);
+	encode_wavetable(&data[WAVE_DATA_SIZE], noise_samples);
 
 	SpuInit();
 	SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
@@ -122,67 +123,60 @@ static void setup_sound(void) {
 
 	SPU_CH_ADDR(SINE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR);
 	SPU_CH_LOOP_ADDR(SINE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR);
-	SPU_CH_ADDR(SAW_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
-	SPU_CH_LOOP_ADDR(SAW_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
+	SPU_CH_ADDR(NOISE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
+	SPU_CH_LOOP_ADDR(NOISE_CHANNEL) = getSPUAddr(WAVE_DATA_ADDR + WAVE_DATA_SIZE);
 
-	for (int channel = SINE_CHANNEL; channel <= SAW_CHANNEL; channel++) {
+	for (int channel = SINE_CHANNEL; channel <= NOISE_CHANNEL; channel++) {
 		set_voice_volume(channel, 0);
 		SPU_CH_ADSR1(channel) = 0x00ff;
 		SPU_CH_ADSR2(channel) = 0x0000;
 	}
 }
 
-static void start_note(int note_index) {
-	const Note *note = &phrase[note_index];
-	uint16_t pitch = getSPUSampleRate(note->frequency * WAVE_SAMPLE_COUNT);
+static void start_kick(void) {
+	uint16_t pitch = getSPUSampleRate(pitch_envelope[0] * WAVE_SAMPLE_COUNT);
 
 	SpuSetKey(0, VOICE_MASK);
 	set_voice_volume(SINE_CHANNEL, 0);
-	set_voice_volume(SAW_CHANNEL, 0);
+	set_voice_volume(NOISE_CHANNEL, 0);
 	SPU_CH_FREQ(SINE_CHANNEL) = pitch;
-	SPU_CH_FREQ(SAW_CHANNEL) = pitch;
+	SPU_CH_FREQ(NOISE_CHANNEL) = pitch;
 
-	sequencer.note_index = note_index;
-	sequencer.note_frame = 0;
-	sequencer.morph = 0;
-	sequencer.amplitude = 0;
+	sequencer.kick_frame = 0;
+	sequencer.noise_mix = noise_envelope[0];
+	sequencer.amplitude = amplitude_envelope[0];
+	sequencer.frequency = pitch_envelope[0];
 	SpuSetKey(1, VOICE_MASK);
 }
 
-static void restart_phrase(void) {
-	start_note(0);
-}
-
 static void update_sound(void) {
-	const Note *note = &phrase[sequencer.note_index];
-	int frame = sequencer.note_frame;
-	int remaining = note->duration - frame;
-	int morph_frames = note->duration - RELEASE_FRAMES - SAW_HOLD_FRAMES;
+	int frame = sequencer.kick_frame;
 
-	if (frame < ATTACK_FRAMES)
-		sequencer.amplitude = frame * 256 / ATTACK_FRAMES;
-	else if (remaining <= RELEASE_FRAMES)
-		sequencer.amplitude = (remaining - 1) * 256 / (RELEASE_FRAMES - 1);
-	else
-		sequencer.amplitude = 256;
+	if (frame < ENVELOPE_FRAMES) {
+		sequencer.noise_mix = noise_envelope[frame];
+		sequencer.amplitude = amplitude_envelope[frame];
+		sequencer.frequency = pitch_envelope[frame];
+	} else {
+		sequencer.noise_mix = 0;
+		sequencer.amplitude = 0;
+		sequencer.frequency = pitch_envelope[ENVELOPE_FRAMES - 1];
+	}
 
-	if (frame < morph_frames)
-		sequencer.morph = frame * 256 / morph_frames;
-	else
-		sequencer.morph = 256;
+	uint16_t pitch = getSPUSampleRate(sequencer.frequency * WAVE_SAMPLE_COUNT);
+	SPU_CH_FREQ(SINE_CHANNEL) = pitch;
+	SPU_CH_FREQ(NOISE_CHANNEL) = pitch;
 
-	// These complementary gain envelopes are the wavetable interpolation:
-	// sine * (1 - morph) + saw * morph. Both voices share pitch and key-on, so
-	// their samples remain locked while only their balance changes.
+	// Complementary voice gains interpolate noise into sine. Both voices use
+	// the same pitch sweep, so the transient and body remain one sound.
 	int volume = VOICE_VOLUME * sequencer.amplitude / 256;
-	int sine_volume = volume * (256 - sequencer.morph) / 256;
-	int saw_volume = volume * sequencer.morph / 256;
+	int sine_volume = volume * (256 - sequencer.noise_mix) / 256;
+	int noise_volume = volume * sequencer.noise_mix / 256;
 	set_voice_volume(SINE_CHANNEL, sine_volume);
-	set_voice_volume(SAW_CHANNEL, saw_volume);
+	set_voice_volume(NOISE_CHANNEL, noise_volume);
 
-	sequencer.note_frame++;
-	if (sequencer.note_frame >= note->duration)
-		start_note((sequencer.note_index + 1) % PHRASE_LENGTH);
+	sequencer.kick_frame++;
+	if (sequencer.kick_frame >= KICK_INTERVAL)
+		start_kick();
 }
 
 static void setup_rendering(RenderContext *context) {
@@ -254,46 +248,50 @@ static void draw_balance(RenderContext *context) {
 	const int x = 54;
 	const int y = 88;
 	const int width = 212;
-	int sine_width = width * (256 - sequencer.morph) / 256;
+	int noise_width = width * sequencer.noise_mix / 256;
 
 	draw_tile(context, 3, x, y, width, 9, 28, 34, 48);
-	draw_tile(context, 2, x, y, sine_width, 9, 60, 150, 255);
-	draw_tile(context, 2, x + sine_width, y, width - sine_width, 9, 255, 116, 48);
-	draw_text(context, 8, 85, "SINE");
-	draw_text(context, 273, 85, "SAW");
+	draw_tile(context, 2, x, y, noise_width, 9, 255, 116, 48);
+	draw_tile(context, 2, x + noise_width, y, width - noise_width, 9, 60, 150, 255);
+	draw_text(context, 8, 85, "NOISE");
+	draw_text(context, 273, 85, "SINE");
 
 	draw_tile(context, 3, x, 107, width, 4, 28, 34, 48);
 	draw_tile(context, 2, x, 107, width * sequencer.amplitude / 256, 4, 88, 224, 128);
 	draw_text(context, 8, 103, "AMP");
+
+	draw_tile(context, 3, x, 122, width, 4, 28, 34, 48);
+	draw_tile(context, 2, x, 122, width * sequencer.frequency / 180, 4, 232, 204, 72);
+	draw_text(context, 8, 118, "PITCH");
 }
 
 static void draw_waveform(RenderContext *context) {
 	const int graph_left = 19;
 	const int graph_width = 282;
-	const int center_y = 166;
-	int red = 60 + 195 * sequencer.morph / 256;
-	int green = 150 - 34 * sequencer.morph / 256;
-	int blue = 255 - 207 * sequencer.morph / 256;
+	const int center_y = 170;
+	int red = 60 + 195 * sequencer.noise_mix / 256;
+	int green = 150 - 34 * sequencer.noise_mix / 256;
+	int blue = 255 - 207 * sequencer.noise_mix / 256;
 
 	draw_tile(context, 3, graph_left, center_y, graph_width, 1, 38, 48, 66);
 
 	for (int index = 0; index < WAVE_SAMPLE_COUNT - 1; index++) {
 		int sample_a = (
-			sine_samples[index] * (256 - sequencer.morph) +
-			saw_samples[index] * sequencer.morph
+			sine_samples[index] * (256 - sequencer.noise_mix) +
+			noise_samples[index] * sequencer.noise_mix
 		) / 256;
 		int sample_b = (
-			sine_samples[index + 1] * (256 - sequencer.morph) +
-			saw_samples[index + 1] * sequencer.morph
+			sine_samples[index + 1] * (256 - sequencer.noise_mix) +
+			noise_samples[index + 1] * sequencer.noise_mix
 		) / 256;
 		LINE_F2 *line = (LINE_F2 *) allocate_primitive(context, 2, sizeof(LINE_F2));
 		setLineF2(line);
 		setXY2(
 			line,
 			graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_a * 6,
+			center_y - sample_a * 5,
 			graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_b * 6
+			center_y - sample_b * 5
 		);
 		setRGB0(line, red, green, blue);
 	}
@@ -304,7 +302,7 @@ int main(void) {
 	setup_sound();
 	InitPAD(pad_buffers[0], sizeof(pad_buffers[0]), pad_buffers[1], sizeof(pad_buffers[1]));
 	StartPAD();
-	restart_phrase();
+	start_kick();
 
 	uint16_t previous_buttons = 0xffff;
 
@@ -314,17 +312,16 @@ int main(void) {
 		PADTYPE *pad = (PADTYPE *) pad_buffers[0];
 		uint16_t buttons = (pad->stat == 0) ? pad->btn : 0xffff;
 		if ((previous_buttons & PAD_CROSS) && !(buttons & PAD_CROSS))
-			restart_phrase();
+			start_kick();
 		previous_buttons = buttons;
 
-		draw_text(&render_context, 8, 10, "SPU WAVETABLE MORPH");
-		draw_text(&render_context, 8, 27, "Two phase-locked voices, one note");
-		draw_text(&render_context, 8, 43, "Complementary envelopes interpolate");
-		draw_text(&render_context, 8, 62, "NOTE");
-		draw_text(&render_context, 54, 62, phrase[sequencer.note_index].name);
+		draw_text(&render_context, 8, 10, "WAVETABLE KICK SYNTHESIS");
+		draw_text(&render_context, 8, 27, "Noise transient -> sine body");
+		draw_text(&render_context, 8, 43, "Fast high -> low pitch sweep");
+		draw_text(&render_context, 8, 62, "RETRIGGER: 120 BPM");
 		draw_balance(&render_context);
 		draw_waveform(&render_context);
-		draw_text(&render_context, 8, 217, "Cross: restart phrase");
+		draw_text(&render_context, 8, 217, "Cross: trigger kick");
 
 		flip_buffers(&render_context);
 	}

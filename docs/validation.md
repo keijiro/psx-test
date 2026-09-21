@@ -1,5 +1,16 @@
 # Validation record
 
+## Wavetable kick synthesis demo
+
+On 2026-09-21, the melodic sine-to-saw demonstration was replaced with a
+120 BPM synthesized kick. The implementation crossfades a short fixed-noise
+transient into a sine body, sweeps the shared pitch from 180 Hz to 46 Hz, and
+applies a nonlinear amplitude decay. Both Debug and Release builds completed
+successfully and produced MIPS-I ELF and PS-X EXE artifacts. The Debug
+executable remained running under OpenBIOS in PCSX-Redux without an emulator or
+SDK error. The audio output has not been evaluated by ear or checked on
+original hardware.
+
 ## Wavetable morph demo
 
 On 2026-09-21, the single-channel square-wave test was replaced with the

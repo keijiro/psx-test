@@ -4,7 +4,7 @@ project(
 	psx-homebrew-hello
 	LANGUAGES C
 	VERSION 1.0.0
-	DESCRIPTION "PSn00bSDK two-voice wavetable morph demo"
+	DESCRIPTION "PSn00bSDK wavetable kick synthesis demo"
 )
 
 psn00bsdk_add_executable(hello GPREL src/main.c)

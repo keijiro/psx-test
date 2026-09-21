@@ -1,12 +1,13 @@
-# PlayStation SPU wavetable morph demo
+# PlayStation SPU wavetable kick synthesis demo
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
-original PlayStation from C source on Apple Silicon Macs. The demo plays a
-short repeating phrase using two phase-locked SPU voices per note. One voice
-loops a sine wavetable and the other loops a saw wavetable; complementary
-software envelopes crossfade them to produce a linear sine-to-saw timbre
-morph. Both SPU ADPCM tables are generated in memory, so no external audio
-assets are required.
+original PlayStation from C source on Apple Silicon Macs. The demo synthesizes
+a kick drum at 120 BPM with two SPU voices. A short complementary envelope
+crossfades a fixed noise wavetable into a sine wavetable, while a second
+envelope rapidly sweeps both voices from 180 Hz to 46 Hz. A nonlinear amplitude
+decay shapes the body and leaves a short silent gap before retriggering. Both
+SPU ADPCM tables are generated in memory, so no external audio assets are
+required.
 
 ## Initial setup
 
@@ -63,7 +64,7 @@ built-in debugger enabled. Set `PCSX_REDUX`, `PCSX_REDUX_BIOS`, or
 `PCSX_REDUX_DATA` to use a different emulator binary, BIOS, or personal data
 directory, respectively.
 
-Press the key mapped to the Cross button to restart the phrase. To change the
+Press the key mapped to the Cross button to trigger the kick. To change the
 mapping, press Escape and open `Configuration > Controls`. F5 runs the program
 and F6 pauses it. Because `run.sh` disables Dynarec and enables the debugger,
 `Debug > Show Assembly` can be used to inspect breakpoints and CPU state.
@@ -74,8 +75,8 @@ and F6 pauses it. Because `run.sh` disables Dynarec and enables the debugger,
 - `build/debug/hello.exe`: PS-X EXE loaded directly by PCSX-Redux; it is not a
   Windows executable.
 - `build/release/`: Equivalent artifacts for the Release configuration.
-- `src/main.c`: Runtime SPU ADPCM wavetable generation, two-voice morph
-  envelopes, phrase sequencing, and visualization.
+- `src/main.c`: Runtime SPU ADPCM wavetable generation, two-voice noise-to-sine
+  morph, kick envelopes, retriggering, and visualization.
 - `scripts/env.sh`: zsh environment configuration for the SDK, emulator, and
   `PATH`.
 - `scripts/setup.sh`: Fetches, verifies, builds, and installs pinned
