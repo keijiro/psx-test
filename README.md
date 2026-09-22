@@ -71,11 +71,13 @@ built-in debugger enabled. Set `PCSX_REDUX`, `PCSX_REDUX_BIOS`, or
 directory, respectively.
 
 Use Up and Down on the D-pad to select a setting, and Left and Right to adjust
-it. `WAVE A` and `WAVE B` select the two source tables. `MIDI NOTE` ranges from
-24 to 96. Amplitude and mix attack/release times use 5 ms steps up to 500 ms;
-the amplitude controls select the closest hardware-supported ADSR rates.
+it. Hold an adjustment button to repeat it, or use L1 and R1 for numeric changes
+ten times as large. Wave selections still move to the adjacent choice. `WAVE A`
+and `WAVE B` select the two source tables. `MIDI NOTE` ranges from 24 to 96.
+Amplitude and mix attack/release times use 1 ms steps up to 500 ms; the
+amplitude controls select the closest hardware-supported ADSR rates.
 `PITCH SWEEP` offsets the initial pitch by -24 to +24 semitones and
-`PITCH CURVE` sets the exponential falloff from 1 to 8. Press the key mapped to
+`PITCH CURVE` sets the exponential falloff from 1 to 16. Press the key mapped to
 Cross to trigger the one-shot envelopes. To change the mapping, press Escape
 and open `Configuration > Controls`. F5 runs the program and F6 pauses it.
 Because `run.sh` disables Dynarec and enables the debugger, `Debug > Show

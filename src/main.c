@@ -27,14 +27,18 @@
 #define VOICE_VOLUME 0x3000
 #define ADSR_MAX_LEVEL 0x7fff
 #define ENVELOPE_TICK_RATE 1000
-#define ENVELOPE_TIME_STEP_MS 5
 #define ENVELOPE_MAX_MS 500
+#define ADJUST_FAST_MULTIPLIER 10
+// Input is sampled once per VSync: this gives an approximately 300 ms pause,
+// then a 20 Hz repeat rate on the NTSC display used by the demo.
+#define ADJUST_REPEAT_DELAY_FRAMES 18
+#define ADJUST_REPEAT_INTERVAL_FRAMES 3
 #define NOTE_MIN 24
 #define NOTE_MAX 96
 #define SWEEP_MIN -24
 #define SWEEP_MAX 24
 #define CURVE_MIN 1
-#define CURVE_MAX 8
+#define CURVE_MAX 16
 #define SETTING_COUNT 9
 
 enum { WAVE_SINE, WAVE_TRIANGLE, WAVE_SAW, WAVE_SQUARE, WAVE_NOISE };
@@ -141,6 +145,8 @@ static volatile int playback_active;
 static int software_envelope_started;
 static volatile int trigger_requested;
 static uint8_t pad_buffers[2][34];
+static uint16_t repeating_adjustment_buttons;
+static int adjustment_repeat_frames;
 static int16_t wave_samples[WAVE_COUNT][WAVE_SAMPLE_COUNT];
 static uint32_t wave_data[(WAVE_DATA_SIZE * WAVE_COUNT) / sizeof(uint32_t)];
 
@@ -463,56 +469,98 @@ static void setup_envelope_timer(void) {
 	ExitCriticalSection();
 }
 
-static void adjust_setting(int direction) {
+static int adjust_setting(int adjustment) {
+	int direction = adjustment < 0 ? -1 : 1;
+	int previous;
 	switch (synth_settings.selected) {
 		case 0:
+			previous = synth_settings.wave_a;
 			synth_settings.wave_a =
 				(synth_settings.wave_a + direction + WAVE_COUNT) % WAVE_COUNT;
-			break;
+			return synth_settings.wave_a != previous;
 		case 1:
+			previous = synth_settings.wave_b;
 			synth_settings.wave_b =
 				(synth_settings.wave_b + direction + WAVE_COUNT) % WAVE_COUNT;
-			break;
+			return synth_settings.wave_b != previous;
 		case 2:
+			previous = synth_settings.note;
 			synth_settings.note = clamp(
-				synth_settings.note + direction, NOTE_MIN, NOTE_MAX
+				synth_settings.note + adjustment, NOTE_MIN, NOTE_MAX
 			);
-			break;
+			return synth_settings.note != previous;
 		case 3:
+			previous = synth_settings.amplitude_attack_ms;
 			synth_settings.amplitude_attack_ms = clamp(
-				synth_settings.amplitude_attack_ms + direction * ENVELOPE_TIME_STEP_MS,
+				synth_settings.amplitude_attack_ms + adjustment,
 				0, ENVELOPE_MAX_MS
 			);
-			break;
+			return synth_settings.amplitude_attack_ms != previous;
 		case 4:
+			previous = synth_settings.amplitude_release_ms;
 			synth_settings.amplitude_release_ms = clamp(
-				synth_settings.amplitude_release_ms + direction * ENVELOPE_TIME_STEP_MS,
-				ENVELOPE_TIME_STEP_MS, ENVELOPE_MAX_MS
+				synth_settings.amplitude_release_ms + adjustment,
+				1, ENVELOPE_MAX_MS
 			);
-			break;
+			return synth_settings.amplitude_release_ms != previous;
 		case 5:
+			previous = synth_settings.mix_attack_ms;
 			synth_settings.mix_attack_ms = clamp(
-				synth_settings.mix_attack_ms + direction * ENVELOPE_TIME_STEP_MS,
+				synth_settings.mix_attack_ms + adjustment,
 				0, ENVELOPE_MAX_MS
 			);
-			break;
+			return synth_settings.mix_attack_ms != previous;
 		case 6:
+			previous = synth_settings.mix_release_ms;
 			synth_settings.mix_release_ms = clamp(
-				synth_settings.mix_release_ms + direction * ENVELOPE_TIME_STEP_MS,
+				synth_settings.mix_release_ms + adjustment,
 				0, ENVELOPE_MAX_MS
 			);
-			break;
+			return synth_settings.mix_release_ms != previous;
 		case 7:
+			previous = synth_settings.pitch_sweep;
 			synth_settings.pitch_sweep = clamp(
-				synth_settings.pitch_sweep + direction, SWEEP_MIN, SWEEP_MAX
+				synth_settings.pitch_sweep + adjustment, SWEEP_MIN, SWEEP_MAX
 			);
-			break;
+			return synth_settings.pitch_sweep != previous;
 		case 8:
+			previous = synth_settings.pitch_curve;
 			synth_settings.pitch_curve = clamp(
-				synth_settings.pitch_curve + direction, CURVE_MIN, CURVE_MAX
+				synth_settings.pitch_curve + adjustment, CURVE_MIN, CURVE_MAX
 			);
-			break;
+			return synth_settings.pitch_curve != previous;
 	}
+	return 0;
+}
+
+static int read_adjustment(uint16_t buttons) {
+	const uint16_t adjustment_mask = PAD_LEFT | PAD_RIGHT | PAD_L1 | PAD_R1;
+	uint16_t held = (uint16_t) ~buttons & adjustment_mask;
+	if (held == 0) {
+		repeating_adjustment_buttons = 0;
+		return 0;
+	}
+
+	int repeat = held == repeating_adjustment_buttons;
+	if (!repeat) {
+		repeating_adjustment_buttons = held;
+		adjustment_repeat_frames = ADJUST_REPEAT_DELAY_FRAMES;
+	} else if (adjustment_repeat_frames > 0) {
+		adjustment_repeat_frames--;
+		return 0;
+	} else {
+		adjustment_repeat_frames = ADJUST_REPEAT_INTERVAL_FRAMES - 1;
+	}
+
+	// Shoulder buttons take priority so a held D-pad direction can be
+	// temporarily accelerated without first releasing it.
+	if (held & (PAD_L1 | PAD_R1)) {
+		if ((held & (PAD_L1 | PAD_R1)) == (PAD_L1 | PAD_R1)) return 0;
+		return (held & PAD_L1) ?
+			-ADJUST_FAST_MULTIPLIER : ADJUST_FAST_MULTIPLIER;
+	}
+	if ((held & (PAD_LEFT | PAD_RIGHT)) == (PAD_LEFT | PAD_RIGHT)) return 0;
+	return (held & PAD_LEFT) ? -1 : 1;
 }
 
 static void setup_rendering(RenderContext *context) {
@@ -672,22 +720,14 @@ int main(void) {
 		PADTYPE *pad = (PADTYPE *) pad_buffers[0];
 		uint16_t buttons = pad->stat == 0 ? pad->btn : 0xffff;
 		uint16_t pressed = previous_buttons & ~buttons;
-		int settings_changed = 0;
 		if (pressed & PAD_UP)
 			synth_settings.selected =
 				(synth_settings.selected + SETTING_COUNT - 1) % SETTING_COUNT;
 		if (pressed & PAD_DOWN)
 			synth_settings.selected =
 				(synth_settings.selected + 1) % SETTING_COUNT;
-		if (pressed & PAD_LEFT) {
-			adjust_setting(-1);
-			settings_changed = 1;
-		}
-		if (pressed & PAD_RIGHT) {
-			adjust_setting(1);
-			settings_changed = 1;
-		}
-		if (settings_changed) rebuild_envelope();
+		int adjustment = read_adjustment(buttons);
+		if (adjustment != 0 && adjust_setting(adjustment)) rebuild_envelope();
 		if (pressed & PAD_CROSS) trigger_requested = 1;
 		previous_buttons = buttons;
 
@@ -713,7 +753,7 @@ int main(void) {
 			synth_settings.pitch_sweep, "st");
 		draw_setting_number(&render_context, 108, 8, "PITCH CURVE",
 			synth_settings.pitch_curve, "");
-		draw_text(&render_context, 8, 124, "D-pad: select / adjust");
+		draw_text(&render_context, 8, 124, "D-pad: select/adjust  L1/R1: x10");
 		draw_meters(&render_context, &display_state);
 		draw_waveform(&render_context, &display_state);
 		draw_text(&render_context, 8, 224, "Cross: trigger");
