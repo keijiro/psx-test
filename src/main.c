@@ -138,6 +138,7 @@ static SynthSettings synth_settings = {
 static EnvelopeProgram envelope_programs[2];
 static volatile int active_envelope_program;
 static volatile int playback_active;
+static int software_envelope_started;
 static volatile int trigger_requested;
 static uint8_t pad_buffers[2][34];
 static int16_t wave_samples[WAVE_COUNT][WAVE_SAMPLE_COUNT];
@@ -399,9 +400,10 @@ static void apply_envelope_tick(int tick) {
 	sequencer.frequency = midi_frequency_millihz(synth_settings.note) / 1000;
 }
 
-static void sample_spu_envelope(void) {
+static int sample_spu_envelope(void) {
 	int level = SPU_CH_ADSR_VOL(WAVE_A_CHANNEL) & ADSR_MAX_LEVEL;
 	sequencer.amplitude = level * 256 / ADSR_MAX_LEVEL;
+	return level;
 }
 
 static void start_playback(void) {
@@ -418,6 +420,7 @@ static void start_playback(void) {
 		SPU_CH_ADSR2(channel) = program->adsr2;
 	}
 	playback_active = 1;
+	software_envelope_started = 0;
 	sequencer.envelope_tick = 0;
 	sequencer.amplitude = 0;
 	apply_envelope_tick(0);
@@ -431,6 +434,14 @@ static void timer_tick(void) {
 		return;
 	}
 	if (!playback_active) return;
+	// PCSX-Redux defers key-on until its audio mixer runs. Keep the initial mix
+	// and pitch until the SPU produces a real attack step so short Wave B
+	// transients do not depend on the mixer phase relative to this timer.
+	if (!software_envelope_started) {
+		if (sample_spu_envelope() <= 1) return;
+		software_envelope_started = 1;
+		return;
+	}
 	const EnvelopeProgram *program = &envelope_programs[active_envelope_program];
 	sequencer.envelope_tick++;
 	if (sequencer.envelope_tick >= program->duration_ms) {
