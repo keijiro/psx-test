@@ -1,5 +1,19 @@
 # Validation record
 
+## General wavetable synthesis
+
+On 2026-09-22, the fixed kick voice was expanded into a two-wave wavetable
+synthesizer. Sine, triangle, saw, square, and deterministic noise sources are
+encoded as looping SPU ADPCM; MIDI notes 24--96, amplitude and mix AR times,
+and pitch sweep amount and curvature are editable from the controller.
+
+Clean Debug and Release builds completed successfully and produced MIPS-I ELF
+and PS-X EXE artifacts. The Debug executable remained running under OpenBIOS
+in PCSX-Redux without an emulator or SDK error. The automation interface could
+not bind to the emulator's unbundled macOS window, so the revised screen and
+audio output have not been visually or aurally evaluated, nor checked on
+original hardware.
+
 ## Predictive ADPCM sine encoding
 
 On 2026-09-21, the sine wavetable's direct four-bit quantization was replaced

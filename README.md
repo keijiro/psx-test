@@ -1,14 +1,19 @@
-# PlayStation SPU wavetable kick synthesis demo
+# PlayStation SPU wavetable synthesis demo
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
-original PlayStation from C source on Apple Silicon Macs. The demo synthesizes
-a manually triggered kick drum with two SPU voices. Per-voice SPU ADSR
-envelopes fade a fixed noise wavetable into a sine wavetable, while a pitch
-envelope rapidly sweeps both voices from 180 Hz to 46 Hz. The synth then
-remains silent until the Cross button is pressed again. A 1 kHz hardware timer
-drives only the pitch sweep and samples the SPU envelope levels for the
-visualization; volume shaping runs on the SPU. Both SPU ADPCM tables are
-generated in memory, so no external audio assets are required.
+original PlayStation from C source on Apple Silicon Macs. The demo is a
+two-voice wavetable synthesizer. Each voice can use a sine, triangle, saw,
+square, or deterministic noise table, and complementary voice volumes linearly
+interpolate between the selected pair. A MIDI note number chooses the base
+pitch. Independent one-shot AR envelopes control amplitude and waveform mix,
+and a curve control shapes a positive or negative pitch sweep.
+
+The amplitude AR runs on the voices' SPU ADSR generators. A 1 kHz hardware
+timer updates the complementary mix volumes and pitch registers, and reads the
+hardware envelope level for visualization. All five 56-sample tables are
+generated and encoded to looping SPU ADPCM at startup. The encoder searches all
+predictor and shift combinations against decoded error and carries predictor
+history across repeated cycles, so no external audio assets are required.
 
 ## Initial setup
 
@@ -65,15 +70,16 @@ built-in debugger enabled. Set `PCSX_REDUX`, `PCSX_REDUX_BIOS`, or
 `PCSX_REDUX_DATA` to use a different emulator binary, BIOS, or personal data
 directory, respectively.
 
-Use Up and Down on the D-pad to select an envelope setting, and Left and Right
-to adjust it while the demo is running. The editable settings are the start and
-end pitch, pitch sweep length, sine amplitude envelope length, and noise ADSR
-decay length. Envelope times are displayed in milliseconds and change in 5 ms
-steps; the SPU uses the closest hardware-supported ADSR rate. Press
-the key mapped to the Cross button to trigger the kick. To change the mapping,
-press Escape and open `Configuration > Controls`. F5 runs the program and F6
-pauses it. Because `run.sh` disables Dynarec and enables the debugger, `Debug >
-Show Assembly` can be used to inspect breakpoints and CPU state.
+Use Up and Down on the D-pad to select a setting, and Left and Right to adjust
+it. `WAVE A` and `WAVE B` select the two source tables. `MIDI NOTE` ranges from
+24 to 96. Amplitude and mix attack/release times use 5 ms steps up to 500 ms;
+the amplitude controls select the closest hardware-supported ADSR rates.
+`PITCH SWEEP` offsets the initial pitch by -24 to +24 semitones and
+`PITCH CURVE` sets the exponential falloff from 1 to 8. Press the key mapped to
+Cross to trigger the one-shot envelopes. To change the mapping, press Escape
+and open `Configuration > Controls`. F5 runs the program and F6 pauses it.
+Because `run.sh` disables Dynarec and enables the debugger, `Debug > Show
+Assembly` can be used to inspect breakpoints and CPU state.
 
 ## Artifacts and directories
 
@@ -81,8 +87,8 @@ Show Assembly` can be used to inspect breakpoints and CPU state.
 - `build/debug/hello.exe`: PS-X EXE loaded directly by PCSX-Redux; it is not a
   Windows executable.
 - `build/release/`: Equivalent artifacts for the Release configuration.
-- `src/main.c`: Runtime SPU ADPCM wavetable generation, two-voice noise-to-sine
-  morph, button-triggered kick envelopes, and visualization.
+- `src/main.c`: Runtime SPU ADPCM wavetable generation, two-voice interpolation,
+  button-triggered AR and pitch envelopes, controls, and visualization.
 - `scripts/env.sh`: zsh environment configuration for the SDK, emulator, and
   `PATH`.
 - `scripts/setup.sh`: Fetches, verifies, builds, and installs pinned
