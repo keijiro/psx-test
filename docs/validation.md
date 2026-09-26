@@ -1,5 +1,23 @@
 # Validation record
 
+## C and Rust PS1 build
+
+On 2026-09-26, waveform generation, ADPCM encoding, settings rules, and
+envelope calculations were moved to a `no_std` Rust static library built for
+`mipsel-sony-psx`. C retains SDK calls, hardware register access, interrupts,
+and rendering. Native Rust unit tests passed (3/3). Clean Debug and Release
+builds through the project CMake presets produced MIPS-I ELF files and PS-X
+EXEs of about 114 KB and 22 KB respectively.
+
+PSn00bSDK `elf2x` treated Rust's trailing `GNU_STACK` program header as a
+load segment at address zero. The build now filters this metadata header in a
+temporary ELF copy passed to `elf2x`; the linked ELF is preserved for symbols
+and debugging. The linker still reports mixed abicalls/non-abicalls warnings.
+
+The emulator exited with code 255 before logging OpenBIOS startup for both
+this build and the pre-change Release EXE in this session. Screen, controls,
+and audio behavior therefore remain unverified here.
+
 ## General wavetable synthesis
 
 On 2026-09-22, the fixed kick voice was expanded into a two-wave wavetable

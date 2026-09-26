@@ -29,6 +29,12 @@ binutils_formula_sha256 = "20c8043f71773402683d30e0a611586bf6755f721421a4b435f09
 gcc_formula_url = "https://raw.githubusercontent.com/grumpycoders/pcsx-redux/c2e2dec197d3eb8f3db2ee63b8037321dbe1085e/tools/macos-mips/mipsel-none-elf-gcc.rb"
 gcc_formula_sha256 = "d6a9737b2bd04031ef7a4dfa8e163338feb214837fa466f0d37bed03166a3936"
 
+[rust]
+channel = "nightly-2026-09-26"
+rustc = "1.100.0-nightly (5ceaf6608 2026-09-25)"
+target = "mipsel-sony-psx"
+standard_library = "core (built from rust-src)"
+
 [psn00bsdk]
 repository = "https://github.com/Lameguy64/PSn00bSDK"
 tag = "v0.24"

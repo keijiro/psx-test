@@ -1,7 +1,7 @@
 # PlayStation SPU wavetable synthesis demo
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
-original PlayStation from C source on Apple Silicon Macs. The demo is a
+original PlayStation from C and Rust source on Apple Silicon Macs. The demo is a
 two-voice wavetable synthesizer. Each voice can use a sine, triangle, saw,
 square, or deterministic noise table, and complementary voice volumes linearly
 interpolate between the selected pair. A MIDI note number chooses the base
@@ -15,13 +15,24 @@ generated and encoded to looping SPU ADPCM at startup. The encoder searches all
 predictor and shift combinations against decoded error and carries predictor
 history across repeated cycles, so no external audio assets are required.
 
+## C and Rust boundary
+
+C owns the PSn00bSDK entry point, timer callback, SPU/GPU registers, pad reads,
+and drawing. Rust provides a `no_std` static library with waveform and ADPCM
+generation, settings and button repeat rules, and envelope calculations. The
+fixed-layout functions in `src/synth.h` are the only interface between them.
+CMake builds `core` for `mipsel-sony-psx` and links the library into the SDK
+executable. The conversion wrapper adapts Rust-generated ELF metadata for the SDK
+`elf2x` tool.
+
 ## Initial setup
 
 Prerequisites are an Apple Silicon Mac, Xcode Command Line Tools, Homebrew,
-and Git. The setup installs CMake, Ninja, the MIPS GCC/binutils toolchain from
-the official PCSX-Redux definitions, PSn00bSDK, PCSX-Redux, and its bundled
-OpenBIOS. It does not upgrade all existing Homebrew packages, and installs the
-SDK and emulator inside the project.
+Git, and [rustup](https://rustup.rs). The setup installs CMake, Ninja, the
+MIPS GCC/binutils toolchain from the official PCSX-Redux definitions,
+PSn00bSDK, PCSX-Redux, its bundled OpenBIOS, and the pinned Rust nightly with
+`rust-src`. It does not upgrade all existing Homebrew packages. The SDK and
+emulator are installed inside the project.
 
 ```sh
 ./scripts/setup.sh
@@ -89,8 +100,12 @@ Assembly` can be used to inspect breakpoints and CPU state.
 - `build/debug/hello.exe`: PS-X EXE loaded directly by PCSX-Redux; it is not a
   Windows executable.
 - `build/release/`: Equivalent artifacts for the Release configuration.
-- `src/main.c`: Runtime SPU ADPCM wavetable generation, two-voice interpolation,
-  button-triggered AR and pitch envelopes, controls, and visualization.
+- `src/main.c`: PSn00bSDK initialization, SPU/GPU/pad access, timer interrupt,
+  and rendering.
+- `rust/src/lib.rs`: Waveform generation, SPU ADPCM encoding, control state,
+  and envelope calculations.
+- `src/synth.h`: C ABI shared by the C and Rust layers.
+- `scripts/elf2x-rust.py`: Filters Rust ELF stack metadata for the SDK converter.
 - `scripts/env.sh`: zsh environment configuration for the SDK, emulator, and
   `PATH`.
 - `scripts/setup.sh`: Fetches, verifies, builds, and installs pinned
