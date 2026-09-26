@@ -102,8 +102,10 @@ Assembly` can be used to inspect breakpoints and CPU state.
 - `build/release/`: Equivalent artifacts for the Release configuration.
 - `src/main.c`: PSn00bSDK initialization, SPU/GPU/pad access, timer interrupt,
   and rendering.
-- `rust/src/lib.rs`: Waveform generation, SPU ADPCM encoding, control state,
-  and envelope calculations.
+- `rust/src/lib.rs`: C ABI entry points for the `no_std` Rust library.
+- `rust/src/synth.rs`: Settings, button repeat state, and envelope calculations.
+- `rust/src/waveform.rs`: Waveform generation and ADPCM loop construction.
+- `rust/src/adpcm.rs`: Stateful SPU ADPCM block encoder.
 - `src/synth.h`: C ABI shared by the C and Rust layers.
 - `scripts/elf2x-rust.py`: Filters Rust ELF stack metadata for the SDK converter.
 - `scripts/env.sh`: zsh environment configuration for the SDK, emulator, and
