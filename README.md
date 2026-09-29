@@ -1,19 +1,24 @@
-# PlayStation SPU wavetable synthesis demo
+# PlayStation SPU two-operator FM demo
 
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
-original PlayStation from C and Rust source on Apple Silicon Macs. The demo is a
-two-voice wavetable synthesizer. Each voice can use a sine, triangle, saw,
-square, or deterministic noise table, and complementary voice volumes linearly
-interpolate between the selected pair. A MIDI note number chooses the base
-pitch. Independent one-shot AR envelopes control amplitude and waveform mix,
-and a curve control shapes a positive or negative pitch sweep.
+original PlayStation from C and Rust source on Apple Silicon Macs. The demo
+uses SPU pitch modulation (PMOD) as a two-operator FM-like synthesizer. Voice 0
+plays a sine modulator and voice 1 plays a sine carrier. The modulator is muted
+in the stereo mix while its output still changes the carrier's pitch at the
+SPU sample rate. Frequency ratios from 1:4 through 16:1 and eleven modulation
+depths are selectable. Independent one-shot AR envelopes shape the modulator
+and carrier; the modulator envelope changes the brightness over the note.
 
-The amplitude AR runs on the voices' SPU ADSR generators. A 1 kHz hardware
-timer updates the complementary mix volumes and pitch registers, and reads the
-hardware envelope level for visualization. All five 56-sample tables are
-generated and encoded to looping SPU ADPCM at startup. The encoder searches all
-predictor and shift combinations against decoded error and carries predictor
-history across repeated cycles, so no external audio assets are required.
+Both envelopes use the SPU ADSR generators. A 1 kHz hardware timer reads their
+levels for the meters and ends playback after the longer envelope. Thirty-three
+56-sample sine tables are generated and encoded to looping SPU ADPCM at startup:
+eleven depths for each of one, two, and four cycles per loop. The smallest
+cycle count that keeps the modulator pitch below the SPU ceiling is selected
+automatically. Source peaks range from zero to 32766, so depth zero is an
+unmodulated sine.
+The encoder searches predictor and shift combinations against decoded error and
+carries predictor history across repeated cycles. No external audio assets are
+required.
 
 ## C and Rust boundary
 
@@ -83,14 +88,16 @@ directory, respectively.
 
 Use Up and Down on the D-pad to select a setting, and Left and Right to adjust
 it. Hold an adjustment button to repeat it, or use L1 and R1 for numeric changes
-ten times as large. Wave selections still move to the adjacent choice. `WAVE A`
-and `WAVE B` select the two source tables. `MIDI NOTE` ranges from 24 to 96.
-Amplitude and mix attack/release times use 1 ms steps up to 500 ms; the
-amplitude controls select the closest hardware-supported ADSR rates.
-`PITCH SWEEP` offsets the initial pitch by -24 to +24 semitones and
-`PITCH CURVE` sets the exponential falloff from 1 to 16. Press the key mapped to
-Cross to trigger the one-shot envelopes. To change the mapping, press Escape
-and open `Configuration > Controls`. F5 runs the program and F6 pauses it.
+ten times as large. `MIDI NOTE` ranges from 24 to 72. `MOD RATIO` selects
+1:4, 1:2, and 1:1 through 16:1. The `MOD CYCLES` display shows the selected
+waveform's number of cycles per loop. `MOD DEPTH` selects
+0 through 10; higher depths produce wider pitch deviation. The 9 and 10 steps
+approach the largest modulation available from one SPU voice.
+Each operator's attack and release uses 1 ms steps up to 500 ms and selects the
+closest hardware-supported ADSR rate. Changes take effect on the next trigger.
+Press the key mapped to Cross to trigger the one-shot envelopes. To change the
+mapping, press Escape and open `Configuration > Controls`. F5 runs the program
+and F6 pauses it.
 Because `run.sh` disables Dynarec and enables the debugger, `Debug > Show
 Assembly` can be used to inspect breakpoints and CPU state.
 
@@ -103,8 +110,8 @@ Assembly` can be used to inspect breakpoints and CPU state.
 - `src/main.c`: PSn00bSDK initialization, SPU/GPU/pad access, timer interrupt,
   and rendering.
 - `rust/src/lib.rs`: C ABI entry points for the `no_std` Rust library.
-- `rust/src/synth.rs`: Settings, button repeat state, and envelope calculations.
-- `rust/src/waveform.rs`: Waveform generation and ADPCM loop construction.
+- `rust/src/synth.rs`: Settings, button repeat state, and operator ADSR programs.
+- `rust/src/waveform.rs`: Depth-scaled sine generation and ADPCM loops.
 - `rust/src/adpcm.rs`: Stateful SPU ADPCM block encoder.
 - `src/synth.h`: C ABI shared by the C and Rust layers.
 - `scripts/elf2x-rust.py`: Filters Rust ELF stack metadata for the SDK converter.

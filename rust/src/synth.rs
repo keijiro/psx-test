@@ -1,4 +1,10 @@
-use crate::waveform::WAVE_SAMPLE_COUNT;
+use crate::waveform::{CYCLES, DEPTH_COUNT, WAVE_SAMPLE_COUNT};
+
+// The first two ratios increase the FM index by lowering the modulator rate.
+const RATIOS: [(i32, i32); 18] = [
+    (1, 4), (1, 2), (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1),
+    (9, 1), (10, 1), (11, 1), (12, 1), (13, 1), (14, 1), (15, 1), (16, 1),
+];
 
 // These rounded durations come from the SPU's 44.1 kHz ADSR generator.
 const ATTACK_MS: [u16; 55] = [
@@ -24,28 +30,27 @@ const MIDI_MILLIHZ: [i32; 73] = [
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SynthSettings {
-    wave_a: i32,
-    wave_b: i32,
     note: i32,
-    amplitude_attack_ms: i32,
-    amplitude_release_ms: i32,
-    mix_attack_ms: i32,
-    mix_release_ms: i32,
-    pitch_sweep: i32,
-    pitch_curve: i32,
+    ratio: i32,
+    depth: i32,
+    carrier_attack_ms: i32,
+    carrier_release_ms: i32,
+    mod_attack_ms: i32,
+    mod_release_ms: i32,
     selected: i32,
 }
 
 #[repr(C)]
 pub struct EnvelopeProgram {
     duration_ms: i32,
-    mix_attack_ms: i32,
-    mix_release_ms: i32,
-    pitch_start: i32,
-    pitch_end: i32,
-    pitch_curve: i32,
-    adsr1: u16,
-    adsr2: u16,
+    carrier_pitch: u16,
+    mod_pitch: u16,
+    carrier_adsr1: u16,
+    carrier_adsr2: u16,
+    mod_adsr1: u16,
+    mod_adsr2: u16,
+    mod_wave: u16,
+    frequency: u16,
 }
 
 #[repr(C)]
@@ -57,44 +62,38 @@ pub struct AdjustmentRepeat {
 impl Default for SynthSettings {
     fn default() -> Self {
         Self {
-            wave_a: 0,
-            wave_b: 2,
             note: 60,
-            amplitude_attack_ms: 20,
-            amplitude_release_ms: 400,
-            mix_attack_ms: 120,
-            mix_release_ms: 280,
-            pitch_sweep: 12,
-            pitch_curve: 3,
+            ratio: 2,
+            depth: 6,
+            carrier_attack_ms: 10,
+            carrier_release_ms: 450,
+            mod_attack_ms: 5,
+            mod_release_ms: 180,
             selected: 0,
         }
     }
 }
 
 enum Setting {
-    WaveA,
-    WaveB,
     Note,
-    AmplitudeAttack,
-    AmplitudeRelease,
-    MixAttack,
-    MixRelease,
-    PitchSweep,
-    PitchCurve,
+    Ratio,
+    Depth,
+    CarrierAttack,
+    CarrierRelease,
+    ModAttack,
+    ModRelease,
 }
 
 impl Setting {
     fn from_index(index: i32) -> Option<Self> {
         Some(match index {
-            0 => Self::WaveA,
-            1 => Self::WaveB,
-            2 => Self::Note,
-            3 => Self::AmplitudeAttack,
-            4 => Self::AmplitudeRelease,
-            5 => Self::MixAttack,
-            6 => Self::MixRelease,
-            7 => Self::PitchSweep,
-            8 => Self::PitchCurve,
+            0 => Self::Note,
+            1 => Self::Ratio,
+            2 => Self::Depth,
+            3 => Self::CarrierAttack,
+            4 => Self::CarrierRelease,
+            5 => Self::ModAttack,
+            6 => Self::ModRelease,
             _ => return None,
         })
     }
@@ -106,52 +105,53 @@ fn adjust_clamped(value: &mut i32, adjustment: i32, min: i32, max: i32) -> bool 
     *value != previous
 }
 
-fn rotate_wave(value: &mut i32, adjustment: i32) -> bool {
-    let previous = *value;
-    let direction = if adjustment < 0 { -1 } else { 1 };
-    *value = (*value + direction).rem_euclid(crate::waveform::WAVE_COUNT as i32);
-    *value != previous
-}
-
 impl SynthSettings {
     pub(crate) fn select(&mut self, direction: i32) {
-        self.selected = (self.selected + direction).rem_euclid(9);
+        self.selected = (self.selected + direction).rem_euclid(7);
     }
 
     pub(crate) fn adjust(&mut self, adjustment: i32) -> bool {
         match Setting::from_index(self.selected) {
-            Some(Setting::WaveA) => rotate_wave(&mut self.wave_a, adjustment),
-            Some(Setting::WaveB) => rotate_wave(&mut self.wave_b, adjustment),
-            Some(Setting::Note) => adjust_clamped(&mut self.note, adjustment, 24, 96),
-            Some(Setting::AmplitudeAttack) => {
-                adjust_clamped(&mut self.amplitude_attack_ms, adjustment, 0, 500)
+            Some(Setting::Note) => adjust_clamped(&mut self.note, adjustment, 24, 72),
+            Some(Setting::Ratio) => {
+                adjust_clamped(&mut self.ratio, adjustment, 0, RATIOS.len() as i32 - 1)
             }
-            Some(Setting::AmplitudeRelease) => {
-                adjust_clamped(&mut self.amplitude_release_ms, adjustment, 1, 500)
+            Some(Setting::Depth) => adjust_clamped(&mut self.depth, adjustment, 0, 10),
+            Some(Setting::CarrierAttack) => {
+                adjust_clamped(&mut self.carrier_attack_ms, adjustment, 0, 500)
             }
-            Some(Setting::MixAttack) => adjust_clamped(&mut self.mix_attack_ms, adjustment, 0, 500),
-            Some(Setting::MixRelease) => {
-                adjust_clamped(&mut self.mix_release_ms, adjustment, 0, 500)
+            Some(Setting::CarrierRelease) => {
+                adjust_clamped(&mut self.carrier_release_ms, adjustment, 1, 500)
             }
-            Some(Setting::PitchSweep) => adjust_clamped(&mut self.pitch_sweep, adjustment, -24, 24),
-            Some(Setting::PitchCurve) => adjust_clamped(&mut self.pitch_curve, adjustment, 1, 16),
+            Some(Setting::ModAttack) => {
+                adjust_clamped(&mut self.mod_attack_ms, adjustment, 0, 500)
+            }
+            Some(Setting::ModRelease) => {
+                adjust_clamped(&mut self.mod_release_ms, adjustment, 1, 500)
+            }
             None => false,
         }
     }
 
     pub(crate) fn build_program(&self) -> EnvelopeProgram {
-        let attack = nearest_rate(&ATTACK_MS, self.amplitude_attack_ms);
-        let release = nearest_rate(&SUSTAIN_MS, self.amplitude_release_ms);
-        // Level 15 bypasses decay; decreasing sustain provides one-shot release.
+        let carrier_attack = nearest_rate(&ATTACK_MS, self.carrier_attack_ms);
+        let carrier_release = nearest_rate(&SUSTAIN_MS, self.carrier_release_ms);
+        let mod_attack = nearest_rate(&ATTACK_MS, self.mod_attack_ms);
+        let mod_release = nearest_rate(&SUSTAIN_MS, self.mod_release_ms);
+        let carrier_pitch = note_pitch(self.note) as u16;
+        let (mod_pitch, mod_wave) = modulator_pitch_and_wave(self.note, self.ratio, self.depth);
         EnvelopeProgram {
-            duration_ms: (self.amplitude_attack_ms + self.amplitude_release_ms).clamp(1, 1000),
-            mix_attack_ms: self.mix_attack_ms,
-            mix_release_ms: self.mix_release_ms,
-            pitch_start: note_pitch((self.note + self.pitch_sweep).clamp(24, 96)),
-            pitch_end: note_pitch(self.note),
-            pitch_curve: self.pitch_curve,
-            adsr1: ((attack << 8) | 0x00ff) as u16,
-            adsr2: (0xc000 | (release << 6)) as u16,
+            duration_ms: (self.carrier_attack_ms + self.carrier_release_ms)
+                .max(self.mod_attack_ms + self.mod_release_ms),
+            carrier_pitch,
+            mod_pitch,
+            // Level 15 bypasses decay; decreasing sustain provides one-shot release.
+            carrier_adsr1: ((carrier_attack << 8) | 0x00ff) as u16,
+            carrier_adsr2: (0xc000 | (carrier_release << 6)) as u16,
+            mod_adsr1: ((mod_attack << 8) | 0x00ff) as u16,
+            mod_adsr2: (0xc000 | (mod_release << 6)) as u16,
+            mod_wave,
+            frequency: (MIDI_MILLIHZ[(self.note - 24) as usize] / 1000) as u16,
         }
     }
 }
@@ -211,79 +211,50 @@ fn note_pitch(note: i32) -> i32 {
     sample_rate * 4096 / 44100
 }
 
-impl EnvelopeProgram {
-    pub(crate) fn evaluate_mix(&self, elapsed: i32) -> i32 {
-        if elapsed < self.mix_attack_ms {
-            return elapsed * 256 / self.mix_attack_ms;
-        }
-        let release_elapsed = elapsed - self.mix_attack_ms;
-        if self.mix_release_ms == 0 || release_elapsed >= self.mix_release_ms {
-            return 0;
-        }
-        256 - release_elapsed * 256 / self.mix_release_ms
-    }
-
-    pub(crate) fn evaluate_pitch(&self, elapsed: i32) -> u16 {
-        let progress = (elapsed * 256 / self.duration_ms).clamp(0, 256);
-        let remaining = 256 - progress;
-        let mut shaped = remaining;
-        for _ in 1..self.pitch_curve {
-            shaped = shaped * remaining / 256;
-        }
-        (self.pitch_end + (self.pitch_start - self.pitch_end) * shaped / 256) as u16
-    }
-}
-
-pub(crate) fn midi_frequency_millihz(note: i32) -> i32 {
-    MIDI_MILLIHZ[(note - 24) as usize]
+fn modulator_pitch_and_wave(note: i32, ratio: i32, depth: i32) -> (u16, u16) {
+    let (numerator, denominator) = RATIOS[ratio as usize];
+    let one_cycle_pitch = note_pitch(note) * numerator / denominator;
+    // Repeating the waveform within the 56-sample loop raises its frequency
+    // without raising the SPU pitch register into its clipping range.
+    let group = CYCLES
+        .iter()
+        .position(|&cycles| one_cycle_pitch / (cycles as i32) < 0x4000)
+        .unwrap();
+    let pitch = one_cycle_pitch / CYCLES[group] as i32;
+    let wave = group * DEPTH_COUNT + depth as usize;
+    (pitch as u16, wave as u16)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::*;
+    use super::*;
+    use crate::{synth_build_program, synth_default_settings, synth_read_adjustment};
 
     #[test]
-    fn defaults_and_envelope_match_demo() {
-        let mut settings = SynthSettings {
-            wave_a: 0,
-            wave_b: 0,
-            note: 0,
-            amplitude_attack_ms: 0,
-            amplitude_release_ms: 0,
-            mix_attack_ms: 0,
-            mix_release_ms: 0,
-            pitch_sweep: 0,
-            pitch_curve: 0,
-            selected: 0,
-        };
+    fn default_program_uses_independent_operators() {
+        let mut settings = SynthSettings::default();
         unsafe {
             synth_default_settings(&mut settings);
         }
-        assert_eq!(
-            (settings.wave_a, settings.wave_b, settings.note),
-            (0, 2, 60)
-        );
+        assert_eq!((settings.note, settings.ratio, settings.depth), (60, 2, 6));
         let mut program = EnvelopeProgram {
             duration_ms: 0,
-            mix_attack_ms: 0,
-            mix_release_ms: 0,
-            pitch_start: 0,
-            pitch_end: 0,
-            pitch_curve: 0,
-            adsr1: 0,
-            adsr2: 0,
+            carrier_pitch: 0,
+            mod_pitch: 0,
+            carrier_adsr1: 0,
+            carrier_adsr2: 0,
+            mod_adsr1: 0,
+            mod_adsr2: 0,
+            mod_wave: 0,
+            frequency: 0,
         };
         unsafe {
             synth_build_program(&settings, &mut program);
         }
-        assert_eq!(program.duration_ms, 420);
-        assert_eq!(unsafe { synth_evaluate_mix(&program, 0) }, 0);
-        assert_eq!(unsafe { synth_evaluate_mix(&program, 120) }, 256);
-        assert_eq!(unsafe { synth_evaluate_mix(&program, 400) }, 0);
-        assert_eq!(
-            unsafe { synth_evaluate_pitch(&program, 420) } as i32,
-            program.pitch_end
-        );
+        assert_eq!(program.duration_ms, 460);
+        assert_eq!(program.carrier_pitch, program.mod_pitch);
+        assert_eq!(program.mod_wave, 6);
+        assert_ne!(program.carrier_adsr2, program.mod_adsr2);
     }
 
     #[test]
@@ -299,24 +270,43 @@ mod tests {
     }
 
     #[test]
-    fn setting_adjustment_keeps_wave_wrap_and_numeric_limits() {
+    fn ratio_adjustment_selects_the_smallest_unclipped_wave() {
         let mut settings = SynthSettings::default();
-        assert!(settings.adjust(-1));
-        assert_eq!(settings.wave_a, 4);
-        settings.select(2);
         assert!(settings.adjust(100));
-        assert_eq!(settings.note, 96);
-        assert!(!settings.adjust(1));
-        settings.select(-3);
-        assert_eq!(settings.selected, 8);
+        assert_eq!(settings.note, 72);
+        settings.select(1);
+        assert!(settings.adjust(100));
+        assert_eq!(settings.ratio, 17);
+        let program = settings.build_program();
+        assert_eq!(program.mod_wave, (2 * DEPTH_COUNT + 6) as u16);
+        assert_eq!(program.mod_pitch as i32 * 4, program.carrier_pitch as i32 * 16);
+        settings.ratio = 9;
+        let program = settings.build_program();
+        assert_eq!(program.mod_wave, (DEPTH_COUNT + 6) as u16);
+        assert_eq!(program.mod_pitch as i32 * 2, program.carrier_pitch as i32 * 8);
         assert!(settings.adjust(-100));
-        assert_eq!(settings.pitch_curve, 1);
+        assert_eq!(settings.ratio, 0);
+        assert_eq!(settings.build_program().mod_pitch, settings.build_program().carrier_pitch / 4);
+        settings.note = 24;
+        settings.ratio = 17;
+        assert_eq!(settings.build_program().mod_wave, 6);
+        for note in 24..=72 {
+            for ratio in 0..RATIOS.len() {
+                let (pitch, wave) = modulator_pitch_and_wave(note, ratio as i32, 10);
+                let cycles = CYCLES[wave as usize / DEPTH_COUNT] as i32;
+                let (numerator, denominator) = RATIOS[ratio];
+                let requested = note_pitch(note) * numerator / denominator;
+                assert!(pitch < 0x4000);
+                assert!(wave < crate::waveform::WAVE_COUNT as u16);
+                assert!((requested - pitch as i32 * cycles).abs() < cycles);
+            }
+        }
     }
 
     #[test]
     fn c_struct_sizes_match_header() {
-        assert_eq!(core::mem::size_of::<SynthSettings>(), 40);
-        assert_eq!(core::mem::size_of::<EnvelopeProgram>(), 28);
+        assert_eq!(core::mem::size_of::<SynthSettings>(), 32);
+        assert_eq!(core::mem::size_of::<EnvelopeProgram>(), 20);
         assert_eq!(core::mem::size_of::<AdjustmentRepeat>(), 8);
     }
 }

@@ -4,7 +4,7 @@ project(
 	psx-homebrew-hello
 	LANGUAGES C
 	VERSION 1.0.0
-	DESCRIPTION "PSn00bSDK two-voice wavetable synthesis demo"
+	DESCRIPTION "PSn00bSDK SPU PMOD two-operator FM demo"
 )
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)

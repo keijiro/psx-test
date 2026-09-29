@@ -15,9 +15,9 @@
 #define OT_LENGTH 16
 #define PACKET_BUFFER_LENGTH 8192
 #define WAVE_DATA_ADDR 0x1010
-#define WAVE_A_CHANNEL 0
-#define WAVE_B_CHANNEL 1
-#define VOICE_MASK ((1 << WAVE_A_CHANNEL) | (1 << WAVE_B_CHANNEL))
+#define MOD_CHANNEL 0
+#define CARRIER_CHANNEL 1
+#define VOICE_MASK ((1 << MOD_CHANNEL) | (1 << CARRIER_CHANNEL))
 #define VOICE_VOLUME 0x3000
 #define WAVE_SAMPLE_PEAK 14336
 #define ADSR_MAX_LEVEL 0x7fff
@@ -37,19 +37,22 @@ typedef struct {
 
 typedef struct {
 	int envelope_tick;
-	int mix;
-	int amplitude;
+	int mod_level;
+	int carrier_level;
 	int frequency;
 } Sequencer;
 
-static const char *const wave_names[WAVE_COUNT] = {
-	"SINE", "TRIANGLE", "SAW", "SQUARE", "NOISE"
+static const char *const ratio_names[] = {
+	"1:4", "1:2", "1:1", "2:1", "3:1", "4:1", "5:1", "6:1", "7:1", "8:1",
+	"9:1", "10:1", "11:1", "12:1", "13:1", "14:1", "15:1", "16:1"
 };
+static const char *const cycle_names[] = { "1", "2", "4" };
 
 static RenderContext render_context;
 static volatile Sequencer sequencer = { 0, 0, 0, 0 };
 static SynthSettings synth_settings;
 static EnvelopeProgram envelope_programs[2];
+static EnvelopeProgram playback_program;
 static volatile int active_envelope_program;
 static volatile int playback_active;
 static int software_envelope_started;
@@ -79,44 +82,41 @@ static void setup_sound(void) {
 	SpuSetTransferStartAddr(WAVE_DATA_ADDR);
 	SpuWrite(wave_data, sizeof(wave_data));
 	SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
+	// Voice 0 modulates voice 1 even when voice 0 is muted in the stereo mix.
+	set_voice_volume(MOD_CHANNEL, 0);
+	set_voice_volume(CARRIER_CHANNEL, VOICE_VOLUME);
+	SPU_FM_MODE1 = 1 << CARRIER_CHANNEL;
 }
 
-static void apply_envelope_tick(int tick) {
-	const EnvelopeProgram *program = &envelope_programs[active_envelope_program];
-	int mix = synth_evaluate_mix(program, tick);
-	uint16_t pitch = synth_evaluate_pitch(program, tick);
-	set_voice_volume(WAVE_A_CHANNEL, VOICE_VOLUME * (256 - mix) / 256);
-	set_voice_volume(WAVE_B_CHANNEL, VOICE_VOLUME * mix / 256);
-	SPU_CH_FREQ(WAVE_A_CHANNEL) = pitch;
-	SPU_CH_FREQ(WAVE_B_CHANNEL) = pitch;
-	sequencer.mix = mix;
-	sequencer.frequency = synth_midi_frequency_millihz(synth_settings.note) / 1000;
-}
-
-static int sample_spu_envelope(void) {
-	int level = SPU_CH_ADSR_VOL(WAVE_A_CHANNEL) & ADSR_MAX_LEVEL;
-	sequencer.amplitude = level * 256 / ADSR_MAX_LEVEL;
-	return level;
+static int sample_spu_envelopes(void) {
+	int mod = SPU_CH_ADSR_VOL(MOD_CHANNEL) & ADSR_MAX_LEVEL;
+	int carrier = SPU_CH_ADSR_VOL(CARRIER_CHANNEL) & ADSR_MAX_LEVEL;
+	sequencer.mod_level = mod * 256 / ADSR_MAX_LEVEL;
+	sequencer.carrier_level = carrier * 256 / ADSR_MAX_LEVEL;
+	return carrier;
 }
 
 static void start_playback(void) {
 	SpuSetKey(0, VOICE_MASK);
-	const EnvelopeProgram *program = &envelope_programs[active_envelope_program];
-	int wave_a_addr = WAVE_DATA_ADDR + synth_settings.wave_a * WAVE_DATA_SIZE;
-	int wave_b_addr = WAVE_DATA_ADDR + synth_settings.wave_b * WAVE_DATA_SIZE;
-	SPU_CH_ADDR(WAVE_A_CHANNEL) = getSPUAddr(wave_a_addr);
-	SPU_CH_LOOP_ADDR(WAVE_A_CHANNEL) = getSPUAddr(wave_a_addr);
-	SPU_CH_ADDR(WAVE_B_CHANNEL) = getSPUAddr(wave_b_addr);
-	SPU_CH_LOOP_ADDR(WAVE_B_CHANNEL) = getSPUAddr(wave_b_addr);
-	for (int channel = WAVE_A_CHANNEL; channel <= WAVE_B_CHANNEL; channel++) {
-		SPU_CH_ADSR1(channel) = program->adsr1;
-		SPU_CH_ADSR2(channel) = program->adsr2;
-	}
+	playback_program = envelope_programs[active_envelope_program];
+	int mod_addr = WAVE_DATA_ADDR + playback_program.mod_wave * WAVE_DATA_SIZE;
+	int carrier_addr = WAVE_DATA_ADDR + 4 * WAVE_DATA_SIZE;
+	SPU_CH_ADDR(MOD_CHANNEL) = getSPUAddr(mod_addr);
+	SPU_CH_LOOP_ADDR(MOD_CHANNEL) = getSPUAddr(mod_addr);
+	SPU_CH_ADDR(CARRIER_CHANNEL) = getSPUAddr(carrier_addr);
+	SPU_CH_LOOP_ADDR(CARRIER_CHANNEL) = getSPUAddr(carrier_addr);
+	SPU_CH_FREQ(MOD_CHANNEL) = playback_program.mod_pitch;
+	SPU_CH_FREQ(CARRIER_CHANNEL) = playback_program.carrier_pitch;
+	SPU_CH_ADSR1(MOD_CHANNEL) = playback_program.mod_adsr1;
+	SPU_CH_ADSR2(MOD_CHANNEL) = playback_program.mod_adsr2;
+	SPU_CH_ADSR1(CARRIER_CHANNEL) = playback_program.carrier_adsr1;
+	SPU_CH_ADSR2(CARRIER_CHANNEL) = playback_program.carrier_adsr2;
 	playback_active = 1;
 	software_envelope_started = 0;
 	sequencer.envelope_tick = 0;
-	sequencer.amplitude = 0;
-	apply_envelope_tick(0);
+	sequencer.mod_level = 0;
+	sequencer.carrier_level = 0;
+	sequencer.frequency = playback_program.frequency;
 	SpuSetKey(1, VOICE_MASK);
 }
 
@@ -127,24 +127,22 @@ static void timer_tick(void) {
 		return;
 	}
 	if (!playback_active) return;
-	// PCSX-Redux defers key-on until its audio mixer runs. Keep the initial mix
-	// and pitch until the SPU produces a real attack step so short Wave B
-	// transients do not depend on the mixer phase relative to this timer.
+	// PCSX-Redux defers key-on until its audio mixer runs. Start the software
+	// duration when the carrier's hardware attack actually becomes visible.
 	if (!software_envelope_started) {
-		if (sample_spu_envelope() <= 1) return;
+		if (sample_spu_envelopes() <= 1) return;
 		software_envelope_started = 1;
 		return;
 	}
-	const EnvelopeProgram *program = &envelope_programs[active_envelope_program];
 	sequencer.envelope_tick++;
-	if (sequencer.envelope_tick >= program->duration_ms) {
+	if (sequencer.envelope_tick >= playback_program.duration_ms) {
 		SpuSetKey(0, VOICE_MASK);
 		playback_active = 0;
-		sequencer.amplitude = 0;
+		sequencer.mod_level = 0;
+		sequencer.carrier_level = 0;
 		return;
 	}
-	apply_envelope_tick(sequencer.envelope_tick);
-	sample_spu_envelope();
+	sample_spu_envelopes();
 }
 
 static void setup_envelope_timer(void) {
@@ -276,36 +274,35 @@ static void draw_meters(RenderContext *context, const Sequencer *state) {
 	const int x = 54;
 	const int width = 212;
 	draw_tile(context, 3, x, 143, width, 5, 28, 34, 48);
-	draw_tile(context, 2, x, 143, width * state->mix / 256, 5, 255, 116, 48);
-	draw_text(context, 8, 140, "MIX");
+	draw_tile(context, 2, x, 143, width * state->mod_level / 256, 5, 255, 116, 48);
+	draw_text(context, 8, 140, "MOD");
 	draw_tile(context, 3, x, 154, width, 5, 28, 34, 48);
-	draw_tile(context, 2, x, 154, width * state->amplitude / 256, 5, 88, 224, 128);
-	draw_text(context, 8, 151, "AMP");
+	draw_tile(context, 2, x, 154, width * state->carrier_level / 256, 5, 88, 224, 128);
+	draw_text(context, 8, 151, "OUT");
 }
 
-static void draw_waveform(RenderContext *context, const Sequencer *state) {
+static void draw_waveform(RenderContext *context) {
 	const int graph_left = 19;
 	const int graph_width = 282;
 	const int center_y = 194;
-	const int16_t *wave_a = wave_samples[synth_settings.wave_a];
-	const int16_t *wave_b = wave_samples[synth_settings.wave_b];
+	const int16_t *mod = wave_samples[envelope_programs[active_envelope_program].mod_wave];
+	const int16_t *carrier = wave_samples[4];
 	draw_tile(context, 3, graph_left, center_y, graph_width, 1, 38, 48, 66);
 	for (int index = 0; index < WAVE_SAMPLE_COUNT - 1; index++) {
-		int sample_a =
-			(wave_a[index] * (256 - state->mix) + wave_b[index] * state->mix) / 256;
-		int sample_b = (wave_a[index + 1] * (256 - state->mix) +
-			wave_b[index + 1] * state->mix) / 256;
-		LINE_F2 *line = (LINE_F2 *) allocate_primitive(context, 2, sizeof(LINE_F2));
-		setLineF2(line);
-		setXY2(
-			line,
-			graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_a * 25 / WAVE_SAMPLE_PEAK,
-			graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
-			center_y - sample_b * 25 / WAVE_SAMPLE_PEAK
-		);
-		setRGB0(line, 60 + 195 * state->mix / 256, 150,
-			255 - 207 * state->mix / 256);
+		for (int op = 0; op < 2; op++) {
+			const int16_t *wave = op == 0 ? mod : carrier;
+			LINE_F2 *line = (LINE_F2 *) allocate_primitive(context, 2, sizeof(LINE_F2));
+			setLineF2(line);
+			setXY2(
+				line,
+				graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
+				center_y - wave[index] * 25 / (WAVE_SAMPLE_PEAK * 2),
+				graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
+				center_y - wave[index + 1] * 25 / (WAVE_SAMPLE_PEAK * 2)
+			);
+			if (op == 0) setRGB0(line, 255, 116, 48);
+			else setRGB0(line, 88, 224, 128);
+		}
 	}
 }
 
@@ -336,27 +333,26 @@ int main(void) {
 		FastEnterCriticalSection();
 		display_state = sequencer;
 		FastExitCriticalSection();
-		draw_text(&render_context, 8, 6, "WAVETABLE SYNTHESIS");
-		draw_setting_text(&render_context, 20, 0, "WAVE A",
-			wave_names[synth_settings.wave_a], "");
-		draw_setting_text(&render_context, 31, 1, "WAVE B",
-			wave_names[synth_settings.wave_b], "");
-		draw_setting_number(&render_context, 42, 2, "MIDI NOTE", synth_settings.note, "");
-		draw_setting_number(&render_context, 53, 3, "AMP ATTACK",
-			synth_settings.amplitude_attack_ms, "ms");
-		draw_setting_number(&render_context, 64, 4, "AMP RELEASE",
-			synth_settings.amplitude_release_ms, "ms");
-		draw_setting_number(&render_context, 75, 5, "MIX ATTACK",
-			synth_settings.mix_attack_ms, "ms");
-		draw_setting_number(&render_context, 86, 6, "MIX RELEASE",
-			synth_settings.mix_release_ms, "ms");
-		draw_setting_number(&render_context, 97, 7, "PITCH SWEEP",
-			synth_settings.pitch_sweep, "st");
-		draw_setting_number(&render_context, 108, 8, "PITCH CURVE",
-			synth_settings.pitch_curve, "");
-		draw_text(&render_context, 8, 124, "D-pad: select/adjust  L1/R1: x10");
+		draw_text(&render_context, 8, 6, "SPU PMOD - 2 OP FM");
+		draw_setting_number(&render_context, 20, 0, "MIDI NOTE", synth_settings.note, "");
+		draw_setting_text(&render_context, 31, 1, "MOD RATIO",
+			ratio_names[synth_settings.ratio], "");
+		draw_setting_number(&render_context, 42, 2, "MOD DEPTH", synth_settings.depth, "/10");
+		draw_setting_number(&render_context, 53, 3, "OUT ATTACK",
+			synth_settings.carrier_attack_ms, "ms");
+		draw_setting_number(&render_context, 64, 4, "OUT RELEASE",
+			synth_settings.carrier_release_ms, "ms");
+		draw_setting_number(&render_context, 75, 5, "MOD ATTACK",
+			synth_settings.mod_attack_ms, "ms");
+		draw_setting_number(&render_context, 86, 6, "MOD RELEASE",
+			synth_settings.mod_release_ms, "ms");
+		draw_setting_text(&render_context, 98, -1, "MOD CYCLES",
+			cycle_names[envelope_programs[active_envelope_program].mod_wave / WAVE_DEPTH_COUNT], "");
+		draw_text(&render_context, 8, 112, "D-pad: select/adjust  L1/R1: x10");
+		draw_text(&render_context, 8, 124, "Changes apply on next trigger");
 		draw_meters(&render_context, &display_state);
-		draw_waveform(&render_context, &display_state);
+		draw_waveform(&render_context);
+		draw_text(&render_context, 8, 205, "Orange: mod  Green: carrier");
 		draw_text(&render_context, 8, 224, "Cross: trigger");
 		flip_buffers(&render_context);
 	}

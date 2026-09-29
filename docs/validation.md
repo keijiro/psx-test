@@ -1,5 +1,30 @@
 # Validation record
 
+## SPU PMOD two-operator demo
+
+On 2026-09-29, the two-wave mixer was replaced with a sine modulator on voice
+0 and a sine carrier on voice 1. PMOD is enabled for voice 1, with separate SPU
+ADSR envelopes, selectable frequency ratios and depth-scaled ADPCM tables.
+Native Rust tests passed (5/5), and both Debug and Release builds produced
+PS-X EXEs.
+PCSX-Redux remained running after loading the Debug EXE, but its window was
+not available to the automation interface. Screen and audible behavior have
+not been checked here or on original hardware.
+
+On 2026-09-29, the ratio range was extended to 1:4 through 8:1 and the
+depth range to 0 through 10. Note and ratio adjustments now preserve the
+selected ratio below the SPU pitch ceiling. The two new depth tables approach
+the maximum signed sample amplitude without overflowing it.
+The user heard an approximately FM-like sound from the earlier range in
+PCSX-Redux. The extended range has not yet been evaluated by ear.
+
+The modulator now uses one, two, or four sine cycles in its 56-sample loop,
+selected to keep the SPU pitch register below 0x4000. Ratios through 16:1 are
+available across the full MIDI note range. Native Rust tests passed (5/5),
+including every note and ratio combination. Debug and Release EXEs built, and
+PCSX-Redux remained running after launch with the Debug EXE. The extra
+high-ratio waveforms have not yet been evaluated by ear or on original hardware.
+
 ## C and Rust PS1 build
 
 On 2026-09-26, waveform generation, ADPCM encoding, settings rules, and

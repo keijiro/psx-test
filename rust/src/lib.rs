@@ -62,21 +62,3 @@ pub unsafe extern "C" fn synth_build_program(
 ) {
     *program = (*settings).build_program();
 }
-
-#[no_mangle]
-pub unsafe extern "C" fn synth_evaluate_mix(program: *const EnvelopeProgram, elapsed: i32) -> i32 {
-    (*program).evaluate_mix(elapsed)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn synth_evaluate_pitch(
-    program: *const EnvelopeProgram,
-    elapsed: i32,
-) -> u16 {
-    (*program).evaluate_pitch(elapsed)
-}
-
-#[no_mangle]
-pub extern "C" fn synth_midi_frequency_millihz(note: i32) -> i32 {
-    synth::midi_frequency_millihz(note)
-}
