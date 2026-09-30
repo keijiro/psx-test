@@ -18,8 +18,9 @@ build time, so startup only copies the prepared loops to SPU RAM. Ratios stop
 at 5:1 to keep every note below the SPU pitch ceiling. The carrier uses a loop
 at fixed amplitude. Depth zero produces an unmodulated carrier waveform.
 The encoder searches predictor and shift combinations against decoded error and
-carries predictor history across repeated cycles. No external audio assets are
-required.
+carries predictor history across repeated cycles. Source loops have zero mean,
+and the encoded loops keep their steady-state mean within one 16-bit PCM unit
+of zero. No external audio assets are required.
 
 ## C and Rust boundary
 

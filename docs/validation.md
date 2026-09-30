@@ -1,5 +1,20 @@
 # Validation record
 
+## PMOD waveform DC correction
+
+On 2026-09-30, native Rust tests passed (9/9), covering all 55 source loops
+and independently decoding the fixed ADPCM bytes over 256 loop repetitions.
+Every source loop has an exact zero sample sum. A separate 512-loop decoder
+measurement found a worst absolute steady-state mean of 0.992 PCM units
+across the encoded bank, before Gaussian interpolation and ADSR. At depth 10,
+the square, saw, and noise loops each had an exact zero decoded mean.
+Worst relative RMS reconstruction error was 0.402% for sine and 1.622% for
+triangle across nonzero depths.
+
+Debug and Release PS-X EXEs built successfully. The existing MIPS-I and
+mixed abicalls/non-abicalls warnings remain. Emulator audio and original
+hardware playback have not been checked for this change.
+
 ## Fractional PMOD ratios
 
 On 2026-09-30, the ratio selector gained 0.25 steps from 1:4 through 5:1.
