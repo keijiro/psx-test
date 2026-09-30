@@ -26,7 +26,8 @@ add_custom_command(
 		"${CARGO_EXECUTABLE}" +nightly-2026-09-26 build
 		--manifest-path "${RUST_MANIFEST}" --target mipsel-sony-psx
 		-Z build-std=core --locked ${RUST_RELEASE_FLAG}
-	DEPENDS ${RUST_SOURCES} "${RUST_MANIFEST}" "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.lock" "${CMAKE_CURRENT_SOURCE_DIR}/rust/rust-toolchain.toml"
+	DEPENDS ${RUST_SOURCES} "${RUST_MANIFEST}" "${CMAKE_CURRENT_SOURCE_DIR}/rust/build.rs"
+		"${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.lock" "${CMAKE_CURRENT_SOURCE_DIR}/rust/rust-toolchain.toml"
 	VERBATIM
 )
 add_custom_target(synth_rust DEPENDS "${RUST_LIBRARY}")

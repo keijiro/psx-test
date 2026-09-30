@@ -3,19 +3,20 @@
 This project uses PSn00bSDK to produce `hello.elf` and `hello.exe` for the
 original PlayStation from C and Rust source on Apple Silicon Macs. The demo
 uses SPU pitch modulation (PMOD) as a two-operator FM-like synthesizer. Voice 0
-plays a sine modulator and voice 1 plays a sine carrier. The modulator is muted
+plays a selectable waveform on the modulator and voice 1 plays an independently
+selectable waveform on the carrier. The modulator is muted
 in the stereo mix while its output still changes the carrier's pitch at the
-SPU sample rate. Frequency ratios from 1:4 through 16:1 and eleven modulation
+SPU sample rate. Frequency ratios from 1:4 through 5:1 and eleven modulation
 depths are selectable. Independent one-shot AR envelopes shape the modulator
 and carrier; the modulator envelope changes the brightness over the note.
 
 Both envelopes use the SPU ADSR generators. A 1 kHz hardware timer reads their
-levels for the meters and ends playback after the longer envelope. Thirty-three
-56-sample sine tables are generated and encoded to looping SPU ADPCM at startup:
-eleven depths for each of one, two, and four cycles per loop. The smallest
-cycle count that keeps the modulator pitch below the SPU ceiling is selected
-automatically. Source peaks range from zero to 32766, so depth zero is an
-unmodulated sine.
+levels for the meters and ends playback after the longer envelope. Five shapes
+(sine, square, saw, triangle, and repeating noise) are generated as single-cycle
+56-sample loops at eleven modulation depths. Their SPU ADPCM encoding runs at
+build time, so startup only copies the prepared loops to SPU RAM. Ratios stop
+at 5:1 to keep every note below the SPU pitch ceiling. The carrier uses a loop
+at fixed amplitude. Depth zero produces an unmodulated carrier waveform.
 The encoder searches predictor and shift combinations against decoded error and
 carries predictor history across repeated cycles. No external audio assets are
 required.
@@ -89,8 +90,8 @@ directory, respectively.
 Use Up and Down on the D-pad to select a setting, and Left and Right to adjust
 it. Hold an adjustment button to repeat it, or use L1 and R1 for numeric changes
 ten times as large. `MIDI NOTE` ranges from 24 to 72. `MOD RATIO` selects
-1:4, 1:2, and 1:1 through 16:1. The `MOD CYCLES` display shows the selected
-waveform's number of cycles per loop. `MOD DEPTH` selects
+1:4 through 5:1 in 0.25 steps. `MOD WAVE` and `OUT WAVE`
+select sine, square, saw, triangle, or noise independently. `MOD DEPTH` selects
 0 through 10; higher depths produce wider pitch deviation. The 9 and 10 steps
 approach the largest modulation available from one SPU voice.
 Each operator's attack and release uses 1 ms steps up to 500 ms and selects the
@@ -109,9 +110,10 @@ Assembly` can be used to inspect breakpoints and CPU state.
 - `build/release/`: Equivalent artifacts for the Release configuration.
 - `src/main.c`: PSn00bSDK initialization, SPU/GPU/pad access, timer interrupt,
   and rendering.
+- `rust/build.rs`: Encodes the ADPCM loops during the host build.
 - `rust/src/lib.rs`: C ABI entry points for the `no_std` Rust library.
 - `rust/src/synth.rs`: Settings, button repeat state, and operator ADSR programs.
-- `rust/src/waveform.rs`: Depth-scaled sine generation and ADPCM loops.
+- `rust/src/waveform.rs`: Waveform generation, depth scaling, and ADPCM loops.
 - `rust/src/adpcm.rs`: Stateful SPU ADPCM block encoder.
 - `src/synth.h`: C ABI shared by the C and Rust layers.
 - `scripts/elf2x-rust.py`: Filters Rust ELF stack metadata for the SDK converter.

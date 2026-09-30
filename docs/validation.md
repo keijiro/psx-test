@@ -1,5 +1,33 @@
 # Validation record
 
+## Fractional PMOD ratios
+
+On 2026-09-30, the ratio selector gained 0.25 steps from 1:4 through 5:1.
+Rust tests passed (7/7), including 0.75:1, 1.25:1, and 1.5:1 pitch
+calculations and every ratio at every supported note. Debug and
+Release PS-X EXEs built. Emulator playback was not checked for this change.
+
+## Single-cycle waveform startup
+
+After the first Release launch, PCSX-Redux reported a 16-bit write to
+`ffff100c`. Disassembly showed Rust's `synth_build_waves` using `$gp` as a
+loop counter; C's next GPREL access then used that value as its base.
+The C call now saves and restores `$gp`. The rebuilt Release disassembly shows
+the restore immediately after the Rust call and before `SpuInit`. The user
+confirmed that the corrected Release build runs in PCSX-Redux.
+
+On 2026-09-29, the two- and four-cycle waveform banks were removed. Ratios
+now stop at 5:1, which fits every supported note in one 56-sample cycle.
+ADPCM encoding moved to the host build so startup no longer
+runs the predictor search on the emulated PS1 CPU.
+
+## Selectable operator waveforms
+
+On 2026-09-29, sine, square, saw, triangle, and looping noise were added for
+both PMOD operators. Native Rust tests passed (6/6), including waveform bank
+indices and independent operator selection. Debug and Release PS-X EXEs built.
+The new shapes have not yet been checked by ear or on original hardware.
+
 ## SPU PMOD two-operator demo
 
 On 2026-09-29, the two-wave mixer was replaced with a sine modulator on voice

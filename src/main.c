@@ -43,10 +43,11 @@ typedef struct {
 } Sequencer;
 
 static const char *const ratio_names[] = {
-	"1:4", "1:2", "1:1", "2:1", "3:1", "4:1", "5:1", "6:1", "7:1", "8:1",
-	"9:1", "10:1", "11:1", "12:1", "13:1", "14:1", "15:1", "16:1"
+	"1:4", "1:2", "0.75:1", "1:1", "1.25:1", "1.5:1", "1.75:1", "2:1",
+	"2.25:1", "2.5:1", "2.75:1", "3:1", "3.25:1", "3.5:1",
+	"3.75:1", "4:1", "4.25:1", "4.5:1", "4.75:1", "5:1"
 };
-static const char *const cycle_names[] = { "1", "2", "4" };
+static const char *const shape_names[] = { "SINE", "SQUARE", "SAW", "TRIANGLE", "NOISE" };
 
 static RenderContext render_context;
 static volatile Sequencer sequencer = { 0, 0, 0, 0 };
@@ -62,6 +63,15 @@ static AdjustmentRepeat adjustment_repeat;
 static int16_t wave_samples[WAVE_COUNT][WAVE_SAMPLE_COUNT];
 static uint32_t wave_data[(WAVE_DATA_SIZE * WAVE_COUNT) / sizeof(uint32_t)];
 
+static void build_waves(void) {
+	uintptr_t saved_gp;
+	// Rust may use $gp as a scratch register while C's GPREL code expects its
+	// value to survive the call. Restore it before accessing C globals again.
+	__asm__ volatile("move %0, $gp" : "=r"(saved_gp));
+	synth_build_waves(&wave_samples[0][0], (uint8_t *) wave_data);
+	__asm__ volatile("move $gp, %0" : : "r"(saved_gp) : "memory");
+}
+
 static void rebuild_envelope(void) {
 	int next_program = active_envelope_program ^ 1;
 	synth_build_program(&synth_settings, &envelope_programs[next_program]);
@@ -76,7 +86,7 @@ static void set_voice_volume(int channel, int volume) {
 }
 
 static void setup_sound(void) {
-	synth_build_waves(&wave_samples[0][0], (uint8_t *) wave_data);
+	build_waves();
 	SpuInit();
 	SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
 	SpuSetTransferStartAddr(WAVE_DATA_ADDR);
@@ -100,7 +110,7 @@ static void start_playback(void) {
 	SpuSetKey(0, VOICE_MASK);
 	playback_program = envelope_programs[active_envelope_program];
 	int mod_addr = WAVE_DATA_ADDR + playback_program.mod_wave * WAVE_DATA_SIZE;
-	int carrier_addr = WAVE_DATA_ADDR + 4 * WAVE_DATA_SIZE;
+	int carrier_addr = WAVE_DATA_ADDR + playback_program.carrier_wave * WAVE_DATA_SIZE;
 	SPU_CH_ADDR(MOD_CHANNEL) = getSPUAddr(mod_addr);
 	SPU_CH_LOOP_ADDR(MOD_CHANNEL) = getSPUAddr(mod_addr);
 	SPU_CH_ADDR(CARRIER_CHANNEL) = getSPUAddr(carrier_addr);
@@ -273,20 +283,20 @@ static void draw_tile(
 static void draw_meters(RenderContext *context, const Sequencer *state) {
 	const int x = 54;
 	const int width = 212;
-	draw_tile(context, 3, x, 143, width, 5, 28, 34, 48);
-	draw_tile(context, 2, x, 143, width * state->mod_level / 256, 5, 255, 116, 48);
-	draw_text(context, 8, 140, "MOD");
 	draw_tile(context, 3, x, 154, width, 5, 28, 34, 48);
-	draw_tile(context, 2, x, 154, width * state->carrier_level / 256, 5, 88, 224, 128);
-	draw_text(context, 8, 151, "OUT");
+	draw_tile(context, 2, x, 154, width * state->mod_level / 256, 5, 255, 116, 48);
+	draw_text(context, 8, 151, "MOD");
+	draw_tile(context, 3, x, 165, width, 5, 28, 34, 48);
+	draw_tile(context, 2, x, 165, width * state->carrier_level / 256, 5, 88, 224, 128);
+	draw_text(context, 8, 162, "OUT");
 }
 
 static void draw_waveform(RenderContext *context) {
 	const int graph_left = 19;
 	const int graph_width = 282;
-	const int center_y = 194;
+	const int center_y = 199;
 	const int16_t *mod = wave_samples[envelope_programs[active_envelope_program].mod_wave];
-	const int16_t *carrier = wave_samples[4];
+	const int16_t *carrier = wave_samples[envelope_programs[active_envelope_program].carrier_wave];
 	draw_tile(context, 3, graph_left, center_y, graph_width, 1, 38, 48, 66);
 	for (int index = 0; index < WAVE_SAMPLE_COUNT - 1; index++) {
 		for (int op = 0; op < 2; op++) {
@@ -296,9 +306,9 @@ static void draw_waveform(RenderContext *context) {
 			setXY2(
 				line,
 				graph_left + index * graph_width / (WAVE_SAMPLE_COUNT - 1),
-				center_y - wave[index] * 25 / (WAVE_SAMPLE_PEAK * 2),
+				center_y - wave[index] * 17 / (WAVE_SAMPLE_PEAK * 2),
 				graph_left + (index + 1) * graph_width / (WAVE_SAMPLE_COUNT - 1),
-				center_y - wave[index + 1] * 25 / (WAVE_SAMPLE_PEAK * 2)
+				center_y - wave[index + 1] * 17 / (WAVE_SAMPLE_PEAK * 2)
 			);
 			if (op == 0) setRGB0(line, 255, 116, 48);
 			else setRGB0(line, 88, 224, 128);
@@ -338,22 +348,23 @@ int main(void) {
 		draw_setting_text(&render_context, 31, 1, "MOD RATIO",
 			ratio_names[synth_settings.ratio], "");
 		draw_setting_number(&render_context, 42, 2, "MOD DEPTH", synth_settings.depth, "/10");
-		draw_setting_number(&render_context, 53, 3, "OUT ATTACK",
+		draw_setting_text(&render_context, 53, 3, "MOD WAVE",
+			shape_names[synth_settings.mod_shape], "");
+		draw_setting_text(&render_context, 64, 4, "OUT WAVE",
+			shape_names[synth_settings.carrier_shape], "");
+		draw_setting_number(&render_context, 75, 5, "OUT ATTACK",
 			synth_settings.carrier_attack_ms, "ms");
-		draw_setting_number(&render_context, 64, 4, "OUT RELEASE",
+		draw_setting_number(&render_context, 86, 6, "OUT RELEASE",
 			synth_settings.carrier_release_ms, "ms");
-		draw_setting_number(&render_context, 75, 5, "MOD ATTACK",
+		draw_setting_number(&render_context, 97, 7, "MOD ATTACK",
 			synth_settings.mod_attack_ms, "ms");
-		draw_setting_number(&render_context, 86, 6, "MOD RELEASE",
+		draw_setting_number(&render_context, 108, 8, "MOD RELEASE",
 			synth_settings.mod_release_ms, "ms");
-		draw_setting_text(&render_context, 98, -1, "MOD CYCLES",
-			cycle_names[envelope_programs[active_envelope_program].mod_wave / WAVE_DEPTH_COUNT], "");
-		draw_text(&render_context, 8, 112, "D-pad: select/adjust  L1/R1: x10");
-		draw_text(&render_context, 8, 124, "Changes apply on next trigger");
+		draw_text(&render_context, 8, 122, "D-pad: select/adjust  L1/R1: x10");
+		draw_text(&render_context, 8, 134, "Cross: trigger  Changes: next note");
 		draw_meters(&render_context, &display_state);
 		draw_waveform(&render_context);
-		draw_text(&render_context, 8, 205, "Orange: mod  Green: carrier");
-		draw_text(&render_context, 8, 224, "Cross: trigger");
+		draw_text(&render_context, 8, 225, "Orange: mod  Green: carrier");
 		flip_buffers(&render_context);
 	}
 }

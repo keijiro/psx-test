@@ -1,8 +1,12 @@
 #![no_std]
 
+#[cfg(not(target_arch = "mips"))]
 mod adpcm;
 mod synth;
 mod waveform;
+
+const ENCODED_WAVES: &[u8; waveform::WAVE_COUNT * 32] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/waves.adpcm"));
 
 pub use synth::{AdjustmentRepeat, EnvelopeProgram, SynthSettings};
 
@@ -15,6 +19,7 @@ fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
 
+#[cfg(not(target_arch = "mips"))]
 fn rounded(value: i32, divisor: i32) -> i32 {
     if value >= 0 {
         (value + divisor / 2) / divisor
@@ -28,8 +33,9 @@ fn rounded(value: i32, divisor: i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn synth_build_waves(samples: *mut i16, adpcm: *mut u8) {
     let waves = &mut *(samples as *mut [[i16; waveform::WAVE_SAMPLE_COUNT]; waveform::WAVE_COUNT]);
-    let encoded = &mut *(adpcm as *mut [[u8; 32]; waveform::WAVE_COUNT]);
-    waveform::build_waves(waves, encoded);
+    let encoded = &mut *(adpcm as *mut [u8; waveform::WAVE_COUNT * 32]);
+    waveform::build_samples(waves);
+    encoded.copy_from_slice(ENCODED_WAVES);
 }
 
 #[no_mangle]

@@ -1,10 +1,8 @@
-use crate::waveform::{CYCLES, DEPTH_COUNT, WAVE_SAMPLE_COUNT};
+use crate::waveform::{wave_index, SHAPE_COUNT, WAVE_SAMPLE_COUNT};
 
-// The first two ratios increase the FM index by lowering the modulator rate.
-const RATIOS: [(i32, i32); 18] = [
-    (1, 4), (1, 2), (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1),
-    (9, 1), (10, 1), (11, 1), (12, 1), (13, 1), (14, 1), (15, 1), (16, 1),
-];
+// Quarter units allow noninteger ratios without floating point.
+const RATIO_QUARTERS: i32 = 4;
+const RATIO_COUNT: i32 = 20;
 
 // These rounded durations come from the SPU's 44.1 kHz ADSR generator.
 const ATTACK_MS: [u16; 55] = [
@@ -33,6 +31,8 @@ pub struct SynthSettings {
     note: i32,
     ratio: i32,
     depth: i32,
+    mod_shape: i32,
+    carrier_shape: i32,
     carrier_attack_ms: i32,
     carrier_release_ms: i32,
     mod_attack_ms: i32,
@@ -50,6 +50,7 @@ pub struct EnvelopeProgram {
     mod_adsr1: u16,
     mod_adsr2: u16,
     mod_wave: u16,
+    carrier_wave: u16,
     frequency: u16,
 }
 
@@ -63,8 +64,10 @@ impl Default for SynthSettings {
     fn default() -> Self {
         Self {
             note: 60,
-            ratio: 2,
+            ratio: 3,
             depth: 6,
+            mod_shape: 0,
+            carrier_shape: 0,
             carrier_attack_ms: 10,
             carrier_release_ms: 450,
             mod_attack_ms: 5,
@@ -78,6 +81,8 @@ enum Setting {
     Note,
     Ratio,
     Depth,
+    ModShape,
+    CarrierShape,
     CarrierAttack,
     CarrierRelease,
     ModAttack,
@@ -90,10 +95,12 @@ impl Setting {
             0 => Self::Note,
             1 => Self::Ratio,
             2 => Self::Depth,
-            3 => Self::CarrierAttack,
-            4 => Self::CarrierRelease,
-            5 => Self::ModAttack,
-            6 => Self::ModRelease,
+            3 => Self::ModShape,
+            4 => Self::CarrierShape,
+            5 => Self::CarrierAttack,
+            6 => Self::CarrierRelease,
+            7 => Self::ModAttack,
+            8 => Self::ModRelease,
             _ => return None,
         })
     }
@@ -107,16 +114,22 @@ fn adjust_clamped(value: &mut i32, adjustment: i32, min: i32, max: i32) -> bool 
 
 impl SynthSettings {
     pub(crate) fn select(&mut self, direction: i32) {
-        self.selected = (self.selected + direction).rem_euclid(7);
+        self.selected = (self.selected + direction).rem_euclid(9);
     }
 
     pub(crate) fn adjust(&mut self, adjustment: i32) -> bool {
         match Setting::from_index(self.selected) {
             Some(Setting::Note) => adjust_clamped(&mut self.note, adjustment, 24, 72),
             Some(Setting::Ratio) => {
-                adjust_clamped(&mut self.ratio, adjustment, 0, RATIOS.len() as i32 - 1)
+                adjust_clamped(&mut self.ratio, adjustment, 0, RATIO_COUNT - 1)
             }
             Some(Setting::Depth) => adjust_clamped(&mut self.depth, adjustment, 0, 10),
+            Some(Setting::ModShape) => {
+                adjust_clamped(&mut self.mod_shape, adjustment, 0, SHAPE_COUNT as i32 - 1)
+            }
+            Some(Setting::CarrierShape) => {
+                adjust_clamped(&mut self.carrier_shape, adjustment, 0, SHAPE_COUNT as i32 - 1)
+            }
             Some(Setting::CarrierAttack) => {
                 adjust_clamped(&mut self.carrier_attack_ms, adjustment, 0, 500)
             }
@@ -139,7 +152,8 @@ impl SynthSettings {
         let mod_attack = nearest_rate(&ATTACK_MS, self.mod_attack_ms);
         let mod_release = nearest_rate(&SUSTAIN_MS, self.mod_release_ms);
         let carrier_pitch = note_pitch(self.note) as u16;
-        let (mod_pitch, mod_wave) = modulator_pitch_and_wave(self.note, self.ratio, self.depth);
+        let (mod_pitch, mod_wave) =
+            modulator_pitch_and_wave(self.note, self.ratio, self.depth, self.mod_shape);
         EnvelopeProgram {
             duration_ms: (self.carrier_attack_ms + self.carrier_release_ms)
                 .max(self.mod_attack_ms + self.mod_release_ms),
@@ -151,6 +165,7 @@ impl SynthSettings {
             mod_adsr1: ((mod_attack << 8) | 0x00ff) as u16,
             mod_adsr2: (0xc000 | (mod_release << 6)) as u16,
             mod_wave,
+            carrier_wave: wave_index(self.carrier_shape as usize, 4) as u16,
             frequency: (MIDI_MILLIHZ[(self.note - 24) as usize] / 1000) as u16,
         }
     }
@@ -211,17 +226,9 @@ fn note_pitch(note: i32) -> i32 {
     sample_rate * 4096 / 44100
 }
 
-fn modulator_pitch_and_wave(note: i32, ratio: i32, depth: i32) -> (u16, u16) {
-    let (numerator, denominator) = RATIOS[ratio as usize];
-    let one_cycle_pitch = note_pitch(note) * numerator / denominator;
-    // Repeating the waveform within the 56-sample loop raises its frequency
-    // without raising the SPU pitch register into its clipping range.
-    let group = CYCLES
-        .iter()
-        .position(|&cycles| one_cycle_pitch / (cycles as i32) < 0x4000)
-        .unwrap();
-    let pitch = one_cycle_pitch / CYCLES[group] as i32;
-    let wave = group * DEPTH_COUNT + depth as usize;
+fn modulator_pitch_and_wave(note: i32, ratio: i32, depth: i32, shape: i32) -> (u16, u16) {
+    let pitch = note_pitch(note) * (ratio + 1) / RATIO_QUARTERS;
+    let wave = wave_index(shape as usize, depth as usize);
     (pitch as u16, wave as u16)
 }
 
@@ -236,7 +243,7 @@ mod tests {
         unsafe {
             synth_default_settings(&mut settings);
         }
-        assert_eq!((settings.note, settings.ratio, settings.depth), (60, 2, 6));
+        assert_eq!((settings.note, settings.ratio, settings.depth), (60, 3, 6));
         let mut program = EnvelopeProgram {
             duration_ms: 0,
             carrier_pitch: 0,
@@ -246,6 +253,7 @@ mod tests {
             mod_adsr1: 0,
             mod_adsr2: 0,
             mod_wave: 0,
+            carrier_wave: 0,
             frequency: 0,
         };
         unsafe {
@@ -254,6 +262,7 @@ mod tests {
         assert_eq!(program.duration_ms, 460);
         assert_eq!(program.carrier_pitch, program.mod_pitch);
         assert_eq!(program.mod_wave, 6);
+        assert_eq!(program.carrier_wave, 4);
         assert_ne!(program.carrier_adsr2, program.mod_adsr2);
     }
 
@@ -270,43 +279,65 @@ mod tests {
     }
 
     #[test]
-    fn ratio_adjustment_selects_the_smallest_unclipped_wave() {
+    fn ratios_fit_the_single_cycle_pitch_range() {
         let mut settings = SynthSettings::default();
         assert!(settings.adjust(100));
         assert_eq!(settings.note, 72);
         settings.select(1);
         assert!(settings.adjust(100));
-        assert_eq!(settings.ratio, 17);
+        assert_eq!(settings.ratio, 19);
         let program = settings.build_program();
-        assert_eq!(program.mod_wave, (2 * DEPTH_COUNT + 6) as u16);
-        assert_eq!(program.mod_pitch as i32 * 4, program.carrier_pitch as i32 * 16);
-        settings.ratio = 9;
-        let program = settings.build_program();
-        assert_eq!(program.mod_wave, (DEPTH_COUNT + 6) as u16);
-        assert_eq!(program.mod_pitch as i32 * 2, program.carrier_pitch as i32 * 8);
+        assert_eq!(program.mod_wave, wave_index(0, 6) as u16);
+        assert_eq!(program.mod_pitch as i32, program.carrier_pitch as i32 * 5);
         assert!(settings.adjust(-100));
         assert_eq!(settings.ratio, 0);
         assert_eq!(settings.build_program().mod_pitch, settings.build_program().carrier_pitch / 4);
-        settings.note = 24;
-        settings.ratio = 17;
-        assert_eq!(settings.build_program().mod_wave, 6);
         for note in 24..=72 {
-            for ratio in 0..RATIOS.len() {
-                let (pitch, wave) = modulator_pitch_and_wave(note, ratio as i32, 10);
-                let cycles = CYCLES[wave as usize / DEPTH_COUNT] as i32;
-                let (numerator, denominator) = RATIOS[ratio];
-                let requested = note_pitch(note) * numerator / denominator;
+            for ratio in 0..RATIO_COUNT {
+                let (pitch, wave) = modulator_pitch_and_wave(note, ratio, 10, 0);
+                let requested = note_pitch(note) * (ratio + 1) / RATIO_QUARTERS;
                 assert!(pitch < 0x4000);
                 assert!(wave < crate::waveform::WAVE_COUNT as u16);
-                assert!((requested - pitch as i32 * cycles).abs() < cycles);
+                assert_eq!(pitch as i32, requested);
             }
         }
     }
 
     #[test]
+    fn fractional_ratios_set_modulator_pitch() {
+        let mut settings = SynthSettings::default();
+        settings.select(1);
+        assert!(settings.adjust(-1));
+        let program = settings.build_program();
+        assert_eq!(program.mod_pitch as i32, program.carrier_pitch as i32 * 3 / 4);
+        assert!(settings.adjust(2));
+        assert_eq!(settings.ratio, 4);
+        let program = settings.build_program();
+        assert_eq!(program.mod_pitch as i32, program.carrier_pitch as i32 * 5 / 4);
+        assert!(settings.adjust(1));
+        assert_eq!(
+            settings.build_program().mod_pitch as i32,
+            program.carrier_pitch as i32 * 3 / 2
+        );
+    }
+
+    #[test]
+    fn operators_select_shapes_independently() {
+        let mut settings = SynthSettings::default();
+        settings.select(3);
+        assert!(settings.adjust(4));
+        settings.select(1);
+        assert!(settings.adjust(2));
+        let program = settings.build_program();
+        assert_eq!(program.mod_wave, wave_index(4, 6) as u16);
+        assert_eq!(program.carrier_wave, wave_index(2, 4) as u16);
+        assert_eq!(program.carrier_pitch, program.mod_pitch);
+    }
+
+    #[test]
     fn c_struct_sizes_match_header() {
-        assert_eq!(core::mem::size_of::<SynthSettings>(), 32);
-        assert_eq!(core::mem::size_of::<EnvelopeProgram>(), 20);
+        assert_eq!(core::mem::size_of::<SynthSettings>(), 40);
+        assert_eq!(core::mem::size_of::<EnvelopeProgram>(), 24);
         assert_eq!(core::mem::size_of::<AdjustmentRepeat>(), 8);
     }
 }
