@@ -1,9 +1,16 @@
 #![no_std]
 
-#[cfg(not(target_arch = "mips"))]
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod adpcm;
 mod synth;
 mod waveform;
+mod waveform_config;
+#[cfg(test)]
+#[path = "../waveforms.rs"]
+mod waveforms;
 
 const ENCODED_WAVES: &[u8; waveform::WAVE_COUNT * 32] =
     include_bytes!(concat!(env!("OUT_DIR"), "/waves.adpcm"));
@@ -19,7 +26,7 @@ fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
 
-#[cfg(not(target_arch = "mips"))]
+#[cfg(test)]
 fn rounded(value: i32, divisor: i32) -> i32 {
     if value >= 0 {
         (value + divisor / 2) / divisor

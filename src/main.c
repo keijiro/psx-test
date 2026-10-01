@@ -47,7 +47,25 @@ static const char *const ratio_names[] = {
 	"2.25:1", "2.5:1", "2.75:1", "3:1", "3.25:1", "3.5:1",
 	"3.75:1", "4:1", "4.25:1", "4.5:1", "4.75:1", "5:1"
 };
-static const char *const shape_names[] = { "SINE", "SQUARE", "SAW", "TRIANGLE", "NOISE" };
+static const char *const shape_names[] = {
+	"SINE", "TRIANGLE", "SAW", "SQUARE",
+	"PULSE 12.5%", "PULSE 25%", "PULSE 37.5%", "ASYM TRIANGLE",
+	"SINE + H2", "SINE + H3", "SINE + H5", "SINE + H7",
+	"ODD ORGAN", "EVEN RICH", "OCTAVE ORGAN", "PRIME PARTIALS",
+	"SAW LP4", "SAW LP8", "SQUARE LP7", "NOTCHED SAW",
+	"RESONANT LOW", "RESONANT MID", "RESONANT HIGH", "COMB SAW",
+	"HALF SINE", "QUARTER SINE", "SIGNED SQ SINE", "SOFT CLIP SINE",
+	"HARD CLIP SINE", "ASYM CLIP", "FOLD SINE LIGHT", "FOLD SINE HEAVY",
+	"PD BEND 25%", "PD BEND 12.5%", "PM 1:1 LIGHT", "PM 1:2 LIGHT",
+	"PM 1:3 LIGHT", "PM 1:4 LIGHT", "PM 1:2 DEEP", "PM 1:3 DEEP",
+	"SYNC SAW 1.5", "SYNC SAW 2.5", "SYNC SAW 3.5", "SYNC SINE 1.5",
+	"SYNC SINE 2.5", "SYNC TRIANGLE 2.5", "RESO BURST 3", "RESO BURST 7",
+	"VOWEL A", "VOWEL E", "VOWEL I", "VOWEL O", "VOWEL U", "VOWEL AE", "VOWEL OU", "NASAL",
+	"STAIRCASE SAW", "STAIRCASE TRI", "BITCRUSH SINE", "HELD SINE",
+	"REPEATING NOISE", "SMOOTH NOISE", "BINARY NOISE", "HELD NOISE"
+};
+_Static_assert(sizeof(shape_names) / sizeof(shape_names[0]) == WAVE_SHAPE_COUNT,
+	"Waveform names must match the Rust bank");
 
 static RenderContext render_context;
 static volatile Sequencer sequencer = { 0, 0, 0, 0 };
@@ -269,6 +287,19 @@ static void draw_setting_number(
 	draw_setting_text(context, y, index, label, value_text, unit);
 }
 
+static void draw_setting_wave(
+	RenderContext *context, int y, int index, const char *label, int shape
+) {
+	char value_text[28];
+	char *next = append_number(value_text, shape + 1);
+	*next++ = '/';
+	next = append_number(next, WAVE_SHAPE_COUNT);
+	*next++ = ' ';
+	next = append_text(next, shape_names[shape]);
+	*next = '\0';
+	draw_setting_text(context, y, index, label, value_text, "");
+}
+
 static void draw_tile(
 	RenderContext *context, int depth, int x, int y, int width, int height,
 	int red, int green, int blue
@@ -348,10 +379,8 @@ int main(void) {
 		draw_setting_text(&render_context, 31, 1, "MOD RATIO",
 			ratio_names[synth_settings.ratio], "");
 		draw_setting_number(&render_context, 42, 2, "MOD DEPTH", synth_settings.depth, "/10");
-		draw_setting_text(&render_context, 53, 3, "MOD WAVE",
-			shape_names[synth_settings.mod_shape], "");
-		draw_setting_text(&render_context, 64, 4, "OUT WAVE",
-			shape_names[synth_settings.carrier_shape], "");
+		draw_setting_wave(&render_context, 53, 3, "MOD WAVE", synth_settings.mod_shape);
+		draw_setting_wave(&render_context, 64, 4, "OUT WAVE", synth_settings.carrier_shape);
 		draw_setting_number(&render_context, 75, 5, "OUT ATTACK",
 			synth_settings.carrier_attack_ms, "ms");
 		draw_setting_number(&render_context, 86, 6, "OUT RELEASE",

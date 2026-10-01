@@ -1,5 +1,39 @@
 # Validation record
 
+## 64-waveform bank
+
+On 2026-10-01, native Rust tests passed (10/10), covering all 704 source
+loops, exact zero source sums, bounded and normalized amplitudes, distinct
+decoded carrier waveforms, and all 4,096 independent operator combinations.
+An independent decoder measured complete steady-state periods for every
+encoded loop: the largest absolute mean was 1.000 PCM unit, the longest
+period was ten loops, and the longest transient was fourteen loops, before
+Gaussian interpolation and ADSR. Worst relative RMS reconstruction error
+was 21.822% for pulse 12.5% at depth 3; sine and triangle remained at 0.402%
+and 1.622%. The 55 previous PCM and ADPCM loops were unchanged after mapping
+their shapes to the new bank indices.
+
+Debug and Release PS-X EXEs built successfully. Their PCM and ADPCM banks
+matched the native test bank byte for byte. The ADPCM bank uses 22,528 bytes
+of SPU RAM, and the PCM display bank uses 78,848 bytes. All 64 numbered labels
+fit the 320-pixel display and their text buffers. The existing MIPS-I and
+mixed abicalls/non-abicalls warnings remain.
+
+The [HTTP/Lua workflow](emulator-automation.md) adapted from `psx-grid` passed
+with the ordinary Debug and Release executables. SIO-driven checks selected
+all 64 shapes on each operator, preserved the other operator's selection,
+exercised selector limits and ten-step adjustments, and triggered the highest
+note, ratio, depth, and bank indices. RAM observations confirmed prepared and
+triggered program agreement, carrier ADSR activity, and envelope completion.
+Each configuration produced 133 GPU captures and a successful `result.json`
+under `build/validation/web-{debug,release}/`.
+
+Visual review confirmed startup, waveform graphs, the longest numbered labels
+on both operators, and active/empty meters at maximum settings. Native-window
+automation remains unavailable, but application display and pad behavior were
+verified through HTTP/Lua. Audible quality and original hardware playback
+have not been checked.
+
 ## PMOD waveform DC correction
 
 On 2026-09-30, native Rust tests passed (9/9), covering all 55 source loops

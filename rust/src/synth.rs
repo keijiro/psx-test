@@ -120,25 +120,24 @@ impl SynthSettings {
     pub(crate) fn adjust(&mut self, adjustment: i32) -> bool {
         match Setting::from_index(self.selected) {
             Some(Setting::Note) => adjust_clamped(&mut self.note, adjustment, 24, 72),
-            Some(Setting::Ratio) => {
-                adjust_clamped(&mut self.ratio, adjustment, 0, RATIO_COUNT - 1)
-            }
+            Some(Setting::Ratio) => adjust_clamped(&mut self.ratio, adjustment, 0, RATIO_COUNT - 1),
             Some(Setting::Depth) => adjust_clamped(&mut self.depth, adjustment, 0, 10),
             Some(Setting::ModShape) => {
                 adjust_clamped(&mut self.mod_shape, adjustment, 0, SHAPE_COUNT as i32 - 1)
             }
-            Some(Setting::CarrierShape) => {
-                adjust_clamped(&mut self.carrier_shape, adjustment, 0, SHAPE_COUNT as i32 - 1)
-            }
+            Some(Setting::CarrierShape) => adjust_clamped(
+                &mut self.carrier_shape,
+                adjustment,
+                0,
+                SHAPE_COUNT as i32 - 1,
+            ),
             Some(Setting::CarrierAttack) => {
                 adjust_clamped(&mut self.carrier_attack_ms, adjustment, 0, 500)
             }
             Some(Setting::CarrierRelease) => {
                 adjust_clamped(&mut self.carrier_release_ms, adjustment, 1, 500)
             }
-            Some(Setting::ModAttack) => {
-                adjust_clamped(&mut self.mod_attack_ms, adjustment, 0, 500)
-            }
+            Some(Setting::ModAttack) => adjust_clamped(&mut self.mod_attack_ms, adjustment, 0, 500),
             Some(Setting::ModRelease) => {
                 adjust_clamped(&mut self.mod_release_ms, adjustment, 1, 500)
             }
@@ -291,7 +290,10 @@ mod tests {
         assert_eq!(program.mod_pitch as i32, program.carrier_pitch as i32 * 5);
         assert!(settings.adjust(-100));
         assert_eq!(settings.ratio, 0);
-        assert_eq!(settings.build_program().mod_pitch, settings.build_program().carrier_pitch / 4);
+        assert_eq!(
+            settings.build_program().mod_pitch,
+            settings.build_program().carrier_pitch / 4
+        );
         for note in 24..=72 {
             for ratio in 0..RATIO_COUNT {
                 let (pitch, wave) = modulator_pitch_and_wave(note, ratio, 10, 0);
@@ -309,11 +311,17 @@ mod tests {
         settings.select(1);
         assert!(settings.adjust(-1));
         let program = settings.build_program();
-        assert_eq!(program.mod_pitch as i32, program.carrier_pitch as i32 * 3 / 4);
+        assert_eq!(
+            program.mod_pitch as i32,
+            program.carrier_pitch as i32 * 3 / 4
+        );
         assert!(settings.adjust(2));
         assert_eq!(settings.ratio, 4);
         let program = settings.build_program();
-        assert_eq!(program.mod_pitch as i32, program.carrier_pitch as i32 * 5 / 4);
+        assert_eq!(
+            program.mod_pitch as i32,
+            program.carrier_pitch as i32 * 5 / 4
+        );
         assert!(settings.adjust(1));
         assert_eq!(
             settings.build_program().mod_pitch as i32,
@@ -325,13 +333,34 @@ mod tests {
     fn operators_select_shapes_independently() {
         let mut settings = SynthSettings::default();
         settings.select(3);
-        assert!(settings.adjust(4));
+        assert!(settings.adjust(100));
+        assert!(!settings.adjust(1));
         settings.select(1);
         assert!(settings.adjust(2));
         let program = settings.build_program();
-        assert_eq!(program.mod_wave, wave_index(4, 6) as u16);
+        assert_eq!(program.mod_wave, wave_index(SHAPE_COUNT - 1, 6) as u16);
         assert_eq!(program.carrier_wave, wave_index(2, 4) as u16);
         assert_eq!(program.carrier_pitch, program.mod_pitch);
+        for mod_shape in 0..SHAPE_COUNT {
+            settings.mod_shape = mod_shape as i32;
+            for carrier_shape in 0..SHAPE_COUNT {
+                settings.carrier_shape = carrier_shape as i32;
+                let program = settings.build_program();
+                assert_eq!(program.mod_wave, wave_index(mod_shape, 6) as u16);
+                assert_eq!(program.carrier_wave, wave_index(carrier_shape, 4) as u16);
+            }
+        }
+        settings.carrier_shape = 0;
+        assert!(settings.adjust(100));
+        assert!(!settings.adjust(1));
+        assert_eq!(settings.carrier_shape, SHAPE_COUNT as i32 - 1);
+        assert!(settings.adjust(-100));
+        assert!(!settings.adjust(-1));
+        assert_eq!(settings.carrier_shape, 0);
+        settings.select(-1);
+        assert!(settings.adjust(-100));
+        assert!(!settings.adjust(-1));
+        assert_eq!(settings.mod_shape, 0);
     }
 
     #[test]

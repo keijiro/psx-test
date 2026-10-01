@@ -27,6 +27,7 @@ add_custom_command(
 		--manifest-path "${RUST_MANIFEST}" --target mipsel-sony-psx
 		-Z build-std=core --locked ${RUST_RELEASE_FLAG}
 	DEPENDS ${RUST_SOURCES} "${RUST_MANIFEST}" "${CMAKE_CURRENT_SOURCE_DIR}/rust/build.rs"
+		"${CMAKE_CURRENT_SOURCE_DIR}/rust/waveforms.rs"
 		"${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.lock" "${CMAKE_CURRENT_SOURCE_DIR}/rust/rust-toolchain.toml"
 	VERBATIM
 )
